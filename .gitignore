@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+dist
+.env
+.env.local
+.env*.local
+.DS_Store
+*.log
+
+# Superseded copy of the whole app, kept locally only.
+new raisoni/
+tsconfig.tsbuildinfo
