@@ -56,8 +56,31 @@ body {
   transition: background-color 0.25s ease, color 0.25s ease;
 }
 
+/* The app shell is exactly one viewport tall and <main> owns the scrolling, so
+   reserve the scrollbar track on that pane: without this, moving between a short
+   view (dashboard, empty state) and a tall one shifts the content ~10px sideways
+   as the bar appears. Deliberately not on <html> — the document never scrolls
+   under the fixed-height shell, so a gutter there is just a dead strip. */
+.scroll-stable {
+  scrollbar-gutter: stable;
+}
+
 * {
   -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard focus. There was no visible focus ring anywhere — tabbing through
+   the sidebar, the filters or the composer left you guessing where you were.
+   :focus-visible only paints for keyboard/AT users, so mouse clicks stay clean. */
+:focus-visible {
+  outline: 2px solid rgba(16, 185, 129, 0.65);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: rgba(16, 185, 129, 0.28);
+  color: var(--text-strong);
 }
 
 /* Custom scrollbar */
@@ -82,8 +105,12 @@ body {
       linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
     background-size: 32px 32px;
   }
+  /* background-image, not the `background` shorthand. Every element that uses
+     this class also sets `background: var(--bg)` inline, and inline wins — so
+     the shorthand version of this rule painted nothing anywhere in the app.
+     Using background-image lets the gradients layer over that flat fill. */
   .radial-glow {
-    background: radial-gradient(1200px 600px at 10% -10%, var(--glow-emerald), transparent 60%),
+    background-image: radial-gradient(1200px 600px at 10% -10%, var(--glow-emerald), transparent 60%),
       radial-gradient(900px 500px at 90% 110%, var(--glow-red), transparent 60%);
   }
   .glass {

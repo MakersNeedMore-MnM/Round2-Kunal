@@ -82,33 +82,39 @@ export function Sidebar({ view, onChange }: { view: ViewKey; onChange: (v: ViewK
     : "FG";
 
   return (
-    <aside className="w-64 shrink-0 border-r flex flex-col" style={{ borderColor: "var(--border)", background: "var(--panel)" }}>
+    <aside
+      className="flex w-64 2xl:w-72 shrink-0 border-r flex-col h-full"
+      style={{ borderColor: "var(--border)", background: "var(--panel)" }}
+    >
       <div className="px-5 pt-5 pb-4 flex items-center gap-3">
-        <div className="relative w-9 h-9 rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-700 grid place-items-center shadow-glow">
+        <div className="relative w-9 h-9 shrink-0 rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-700 grid place-items-center shadow-glow">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
             <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" stroke="#052e1a" strokeWidth="1.6" strokeLinejoin="round" fill="rgba(255,255,255,0.15)" />
             <path d="M9 12l2 2 4-4" stroke="#052e1a" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
-        <div>
-          <div className="text-[15px] font-semibold tracking-wide" style={{ color: "var(--text-strong)" }}>
+        <div className="min-w-0">
+          <div className="text-[15px] font-semibold tracking-wide truncate" style={{ color: "var(--text-strong)" }}>
             FinGuard <span className="text-emerald-400">Intelligence</span>
           </div>
-          <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
+          <div className="text-[10px] uppercase tracking-widest truncate" style={{ color: "var(--muted)" }}>
             Consortium AML Console
           </div>
         </div>
       </div>
 
-      <div className="h-px" style={{ background: "var(--border)" }} />
+      <div className="h-px shrink-0" style={{ background: "var(--border)" }} />
 
-      <nav className="p-3 flex flex-col gap-1">
+      {/* The nav is the part that gives if the window is short — the brand above
+          and the account chip below stay visible. */}
+      <nav className="p-3 flex flex-col gap-1 overflow-y-auto">
         {NAV.map((item) => {
           const active = view === item.key;
           return (
             <button
               key={item.key}
               onClick={() => onChange(item.key)}
+              aria-current={active ? "page" : undefined}
               className={`group relative w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all ${
                 active
                   ? "bg-emerald-500/10 border border-emerald-500/30 shadow-glow"
@@ -117,38 +123,22 @@ export function Sidebar({ view, onChange }: { view: ViewKey; onChange: (v: ViewK
               style={{ color: active ? "var(--text-strong)" : "var(--muted)" }}
             >
               <span
-                className={`grid place-items-center w-8 h-8 rounded-md ${active ? "bg-emerald-500/15 text-emerald-300" : ""}`}
+                className={`grid place-items-center w-8 h-8 shrink-0 rounded-md ${active ? "bg-emerald-500/15 text-emerald-300" : ""}`}
                 style={!active ? { background: "var(--chip)" } : undefined}
               >
                 {item.icon}
               </span>
-              <span className="flex-1">
-                <div className="text-sm font-medium leading-tight">{item.label}</div>
-                <div className="text-[11px]" style={{ color: "var(--muted-2)" }}>{item.hint}</div>
+              <span className="flex-1 min-w-0">
+                <div className="text-sm font-medium leading-tight truncate">{item.label}</div>
+                <div className="text-[11px] truncate" style={{ color: "var(--muted-2)" }}>{item.hint}</div>
               </span>
-              {active && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-glow" />}
+              {active && <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-emerald-400 shadow-glow" />}
             </button>
           );
         })}
       </nav>
 
-      <div className="mt-auto p-4 space-y-3">
-        {/* Privacy Shield card */}
-        <div className="rounded-xl p-3 border" style={{ background: "var(--chip)", borderColor: "var(--border)" }}>
-          <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-blink" />
-            Privacy Shield
-          </div>
-          <div className="mt-1.5 text-sm" style={{ color: "var(--text-strong)" }}>Salted graph handles rotating</div>
-          <div className="mt-2 h-1.5 rounded-full bg-white/5 overflow-hidden">
-            <div className="h-full w-[78%] bg-gradient-to-r from-emerald-500 to-emerald-300" />
-          </div>
-          <div className="mt-1.5 flex justify-between text-[11px]" style={{ color: "var(--muted-2)" }}>
-            <span>ε-budget</span>
-            <span className="text-emerald-300">78% remaining</span>
-          </div>
-        </div>
-
+      <div className="mt-auto p-4 shrink-0">
         {/* Auth user chip */}
         <div className="rounded-xl p-3 border flex items-center gap-2" style={{ background: "var(--chip)", borderColor: "var(--border)" }}>
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-400 to-indigo-500 grid place-items-center text-[11px] font-semibold text-white">

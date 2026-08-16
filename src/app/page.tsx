@@ -9,7 +9,7 @@ export default function Page() {
 
   if (loading) {
     return (
-      <div className="min-h-screen grid place-items-center radial-glow" style={{ background: "var(--bg)" }}>
+      <div className="min-h-screen grid place-items-center radial-glow" style={{ backgroundColor: "var(--bg)" }}>
         <div className="text-center">
           <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-700 grid place-items-center shadow-glow animate-pulse">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none">

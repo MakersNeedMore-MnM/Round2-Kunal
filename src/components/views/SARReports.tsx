@@ -2,10 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { useSARReports, useTransactions, updateSARStatus, createSAR } from "@/lib/hooks";
+import {
+  useSARReports,
+  useTransactions,
+  updateSARStatus,
+  createSAR,
+  clearSARReports,
+  deleteSAR,
+} from "@/lib/hooks";
 import { formatINR, type Severity, type Transaction } from "@/lib/mockData";
 import { buildEvidence, sarNarrative, type SARNarrative } from "@/lib/investigation";
 import { SeverityBadge } from "../ui/SeverityBadge";
+import { Page } from "../ui/Page";
 import { useAuth } from "@/components/AuthProvider";
 
 export function SARReports() {
@@ -14,42 +22,96 @@ export function SARReports() {
   const { transactions } = useTransactions();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const selected = reports.find((c) => c.id === selectedId) ?? reports[0] ?? null;
 
-  const highRiskTx = useMemo(
-    () => transactions.filter((t) => t.severity === "high"),
-    [transactions]
+  // A report raised from one account in the graph describes that account's ring,
+  // not the whole upload — otherwise a case titled for a single account opens on
+  // a narrative about all 43 accounts in the file. If that account is no longer
+  // in the data (cleared, or a fresh upload), fall back to the whole file rather
+  // than rendering an empty report.
+  const ring = useMemo(
+    () => (selected?.account ? ringOf(transactions, selected.account) : null),
+    [transactions, selected?.account]
   );
+  const scoped = useMemo(() => (ring && ring.length ? ring : transactions), [ring, transactions]);
+
+  const highRiskTx = useMemo(() => scoped.filter((t) => t.severity === "high"), [scoped]);
+
+  const scopedAccounts = useMemo(() => {
+    const s = new Set<string>();
+    scoped.forEach((t) => {
+      s.add(t.fromAccount);
+      s.add(t.toAccount);
+    });
+    return s.size;
+  }, [scoped]);
 
   // The report body is derived, never stored. Firestore keeps only the case
   // metadata (title, status, severity), so a report opened tomorrow is written
   // against tomorrow's transactions rather than replaying a stale snapshot —
   // which is what "real-time generation" has to mean for a live case file.
-  const narrative = useMemo(
-    () => sarNarrative(buildEvidence(transactions), transactions),
-    [transactions]
+  const narrative = useMemo(() => sarNarrative(buildEvidence(scoped), scoped), [scoped]);
+
+  // "+ New" always files a whole-file report, whichever case happens to be open,
+  // so its title and fingerprint come from the unscoped narrative. Clicking it
+  // twice without uploading anything new hits the same key, and the second click
+  // selects the existing case instead of cloning it.
+  const wholeFileNarrative = useMemo(
+    () => (scoped === transactions ? narrative : sarNarrative(buildEvidence(transactions), transactions)),
+    [scoped, transactions, narrative]
   );
+  const sourceKey = `all:${transactions.length}:${wholeFileNarrative.flaggedCount}:${wholeFileNarrative.flaggedValue}`;
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   async function handleGenerate() {
     if (!user) return;
+    const twin = reports.find((r) => r.sourceKey === sourceKey);
+    if (twin) {
+      setSelectedId(twin.id);
+      setNotice("You already have a report for this data — opened it instead of making a copy.");
+      return;
+    }
     setCreating(true);
     try {
-      await createSAR(user.uid, {
+      const ref = await createSAR(user.uid, {
         // Titled from what was actually found, so the sidebar list distinguishes
         // one case from the next instead of showing six identical rows.
-        title: narrative.headline,
-        amount: narrative.flaggedValue,
+        title: wholeFileNarrative.headline,
+        amount: wholeFileNarrative.flaggedValue,
         status: "Draft",
-        severity: (narrative.grounds.some((g) => g.severity === "high")
+        sourceKey,
+        severity: (wholeFileNarrative.grounds.some((g) => g.severity === "high")
           ? "high"
-          : narrative.grounds.length
+          : wholeFileNarrative.grounds.length
             ? "medium"
             : "safe") as Severity,
       });
+      setSelectedId(ref.id);
     } finally {
       setCreating(false);
     }
+  }
+
+  async function handleClearHistory() {
+    if (!user) return;
+    const n = await clearSARReports(user.uid);
+    setSelectedId(null);
+    setConfirmClear(false);
+    setNotice(n ? `Cleared ${n} report${n === 1 ? "" : "s"}.` : "Nothing to clear.");
+  }
+
+  async function handleDelete(id: string) {
+    if (!user) return;
+    await deleteSAR(user.uid, id);
+    if (selectedId === id) setSelectedId(null);
   }
 
   async function handleStatusUpdate(id: string, newStatus: string) {
@@ -59,55 +121,117 @@ export function SARReports() {
 
   if (loading) {
     return (
-      <div className="p-5 text-center py-20">
-        <div className="inline-block w-6 h-6 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
-        <div className="mt-2 text-[13px]" style={{ color: "var(--muted)" }}>Loading reports...</div>
-      </div>
+      <Page>
+        <div className="py-20 text-center">
+          <div className="inline-block w-6 h-6 border-2 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin" />
+          <div className="mt-2 text-[13px]" style={{ color: "var(--muted)" }}>Loading reports...</div>
+        </div>
+      </Page>
     );
   }
 
   const refNo = selected ? `FG/STR/${selected.id.slice(0, 8).toUpperCase()}` : "";
 
   return (
-    <div className="p-5">
-      <div className="grid grid-cols-12 gap-4">
-        <aside className="col-span-12 xl:col-span-3 space-y-4">
+    <Page width="wide">
+      {/* Fixed-width case list, flexible document. The 12-column version stacked
+          the list on top of the report below 1280px and gave it a quarter of an
+          ultrawide above it — neither is what a case list wants. */}
+      <div className="grid gap-4 lg:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]">
+        <aside className="min-w-0 space-y-4">
           <div className="rounded-2xl border" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
-            <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: "var(--border)" }}>
-              <div>
-                <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Reports</div>
-                <div className="mt-0.5 text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>{reports.length} total</div>
+            <div className="p-4 border-b" style={{ borderColor: "var(--border)" }}>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Reports</div>
+                  <div className="mt-0.5 text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>{reports.length} total</div>
+                </div>
+                <button
+                  onClick={handleGenerate}
+                  disabled={creating || transactions.length === 0}
+                  className="text-[11px] rounded-md border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 px-2.5 py-1.5 disabled:opacity-50"
+                >
+                  {creating ? "Creating..." : "+ New"}
+                </button>
               </div>
-              <button
-                onClick={handleGenerate}
-                disabled={creating || transactions.length === 0}
-                className="text-[11px] rounded-md border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 px-2.5 py-1.5 disabled:opacity-50"
-              >
-                {creating ? "Creating..." : "+ New"}
-              </button>
+
+              {reports.length > 0 && (
+                <div className="mt-3">
+                  {confirmClear ? (
+                    <div className="flex items-center gap-2 text-[11.5px]">
+                      <span style={{ color: "var(--muted)" }}>Delete all {reports.length}?</span>
+                      <button
+                        onClick={handleClearHistory}
+                        className="rounded-md border border-red-500/40 bg-red-500/15 hover:bg-red-500/25 text-red-200 px-2 py-1"
+                      >
+                        Yes, clear
+                      </button>
+                      <button
+                        onClick={() => setConfirmClear(false)}
+                        className="rounded-md border px-2 py-1"
+                        style={{ borderColor: "var(--border)", color: "var(--text)", background: "var(--chip)" }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmClear(true)}
+                      className="text-[11.5px] underline decoration-dotted hover:text-red-200"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Clear history
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {notice && (
+                <div
+                  className="mt-3 rounded-md border border-sky-500/25 bg-sky-500/10 px-2.5 py-2 text-[11.5px] text-sky-200"
+                  role="status"
+                >
+                  {notice}
+                </div>
+              )}
             </div>
             <div className="max-h-[560px] overflow-auto divide-y" style={{ borderColor: "var(--border)" }}>
               {reports.map((c) => {
                 const active = c.id === (selected?.id ?? "");
                 return (
-                  <button
-                    key={c.id}
-                    onClick={() => setSelectedId(c.id)}
-                    className={`w-full text-left p-3 hover:bg-[var(--hover)] transition ${
-                      active ? "bg-emerald-500/[0.06] border-l-2 border-emerald-500" : "border-l-2 border-transparent"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <SeverityBadge severity={c.severity} />
-                      <span className="text-[10.5px] font-mono" style={{ color: "var(--muted-2)" }}>{c.id.slice(0, 8)}</span>
-                    </div>
-                    <div className="mt-1 text-[13px] line-clamp-2" style={{ color: "var(--text-strong)" }}>{c.title}</div>
-                    <div className="mt-1 flex items-center gap-2 text-[11px]" style={{ color: "var(--muted)" }}>
-                      <span className="font-mono">{formatINR(Number(c.amount))}</span>
-                      <span>·</span>
-                      <span>{c.status}</span>
-                    </div>
-                  </button>
+                  <div key={c.id} className="group relative">
+                    <button
+                      onClick={() => setSelectedId(c.id)}
+                      className={`w-full text-left p-3 pr-9 hover:bg-[var(--hover)] transition ${
+                        active ? "bg-emerald-500/[0.06] border-l-2 border-emerald-500" : "border-l-2 border-transparent"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <SeverityBadge severity={c.severity} />
+                        <span className="text-[10.5px] font-mono" style={{ color: "var(--muted-2)" }}>{c.id.slice(0, 8)}</span>
+                        {c.account && (
+                          <span className="text-[10px] rounded px-1.5 py-0.5 border border-white/10" style={{ color: "var(--muted)" }}>
+                            one account
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[13px] line-clamp-2" style={{ color: "var(--text-strong)" }}>{c.title}</div>
+                      <div className="mt-1 flex items-center gap-2 text-[11px]" style={{ color: "var(--muted)" }}>
+                        <span className="font-mono">{formatINR(Number(c.amount))}</span>
+                        <span>·</span>
+                        <span>{c.status}</span>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => handleDelete(c.id)}
+                      aria-label="Delete this report"
+                      title="Delete this report"
+                      className="absolute top-2.5 right-2 rounded px-1.5 py-0.5 text-[13px] leading-none opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-red-500/20 hover:text-red-200 transition"
+                      style={{ color: "var(--muted-2)" }}
+                    >
+                      ×
+                    </button>
+                  </div>
                 );
               })}
               {reports.length === 0 && (
@@ -133,9 +257,14 @@ export function SARReports() {
           )}
         </aside>
 
-        <section className="col-span-12 xl:col-span-9">
+        <section className="min-w-0">
           {!selected && (
-            <div className="rounded-2xl border p-10 text-center" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
+            // Fills the column instead of sitting as a 60px sliver at the top of
+            // an otherwise empty desktop screen.
+            <div
+              className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-2xl border p-10 text-center"
+              style={{ background: "var(--panel)", borderColor: "var(--border)" }}
+            >
               <div className="text-4xl mb-2">📄</div>
               <div className="text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>No report selected</div>
               <div className="mt-1 text-[13px]" style={{ color: "var(--muted-2)" }}>
@@ -158,6 +287,12 @@ export function SARReports() {
                   <div className="text-[12px]" style={{ color: "var(--muted)" }}>
                     {narrative.flaggedCount} flagged transfers · {formatINR(narrative.flaggedValue)} · {narrative.period}
                   </div>
+                  {selected.account && ring && ring.length > 0 && (
+                    <div className="mt-0.5 text-[11.5px]" style={{ color: "var(--muted-2)" }}>
+                      Raised from <span className="font-mono">{selected.account}</span> · scoped to that ring
+                      ({scopedAccounts} accounts, {scoped.length} transfers)
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => window.print()}
@@ -339,7 +474,7 @@ export function SARReports() {
           flagged={highRiskTx}
         />
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -347,6 +482,33 @@ function txAmount(t: Transaction) {
   return t.currency === "INR" || !t.currency
     ? formatINR(t.amount)
     : `${t.amount.toLocaleString("en-IN")} ${t.currency}`;
+}
+
+// Every transfer in the same connected group as `account` — the ring it belongs
+// to, not just the transfers it appears in. A report raised from one node of a
+// six-hop layering chain should describe the whole chain, since that is what an
+// investigator has to explain to the regulator.
+function ringOf(transactions: Transaction[], account: string): Transaction[] {
+  const neighbours = new Map<string, string[]>();
+  for (const t of transactions) {
+    if (!neighbours.has(t.fromAccount)) neighbours.set(t.fromAccount, []);
+    if (!neighbours.has(t.toAccount)) neighbours.set(t.toAccount, []);
+    neighbours.get(t.fromAccount)!.push(t.toAccount);
+    neighbours.get(t.toAccount)!.push(t.fromAccount);
+  }
+  if (!neighbours.has(account)) return [];
+
+  const seen = new Set<string>([account]);
+  const queue = [account];
+  while (queue.length) {
+    for (const next of neighbours.get(queue.shift()!) ?? []) {
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return transactions.filter((t) => seen.has(t.fromAccount) || seen.has(t.toAccount));
 }
 
 // ── The printed document ──────────────────────────────────────────────────

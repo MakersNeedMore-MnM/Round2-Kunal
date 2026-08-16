@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   buildGraphFromTransactions,
   formatINR,
@@ -14,6 +14,7 @@ import {
 import { useTransactions } from "@/lib/hooks";
 import { SeverityBadge } from "../ui/SeverityBadge";
 import { NodeDetailDrawer } from "../NodeDetailDrawer";
+import { Page } from "../ui/Page";
 
 type FilterKey = "all" | "safe" | "medium" | "high";
 
@@ -27,17 +28,21 @@ const W = 1240;
 export function GraphView({
   focusAccounts,
   onClearFocus,
+  onOpenSAR,
 }: {
   // Accounts an investigator agent named, handed over when the user clicks
   // "View on graph" in the chat. Everything else on the canvas fades back.
   focusAccounts?: string[];
   onClearFocus?: () => void;
+  // Jump to the SAR tab after the drawer files a report from a node.
+  onOpenSAR?: () => void;
 } = {}) {
   const { transactions, loading } = useTransactions();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
     nodes: NODES,
@@ -121,36 +126,48 @@ export function GraphView({
 
   if (loading) {
     return (
-      <div
-        className="p-5 flex items-center justify-center"
-        style={{ height: "calc(100vh - 64px)", color: "var(--muted)" }}
-      >
-        Loading transactions…
-      </div>
+      <Page width="wide" fill>
+        <div className="flex h-full min-h-[420px] items-center justify-center" style={{ color: "var(--muted)" }}>
+          Loading transactions…
+        </div>
+      </Page>
     );
   }
 
   if (NODES.length === 0) {
     return (
-      <div
-        className="p-5 flex flex-col items-center justify-center gap-3"
-        style={{ height: "calc(100vh - 64px)" }}
-      >
-        <div className="text-[32px] opacity-30">◇</div>
-        <div className="text-[14px] font-medium" style={{ color: "var(--text-strong)" }}>
-          No transactions yet
+      <Page width="wide" fill>
+        <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-3">
+          <div className="text-[32px] opacity-30">◇</div>
+          <div className="text-[14px] font-medium" style={{ color: "var(--text-strong)" }}>
+            No transactions yet
+          </div>
+          <div className="text-[12.5px]" style={{ color: "var(--muted-2)" }}>
+            Upload a CSV file to build the transaction graph.
+          </div>
         </div>
-        <div className="text-[12.5px]" style={{ color: "var(--muted-2)" }}>
-          Upload a CSV file to build the transaction graph.
-        </div>
-      </div>
+      </Page>
     );
   }
 
-  const canvasHeight = Math.min(660, Math.max(440, H));
+  // The viewport is a window onto the graph, not a box the graph is squeezed
+  // into. Previously the whole 1240×H layout was fitted into a fixed 660px with
+  // preserveAspectRatio, which on a 740px-wide pane scaled everything to ~30% —
+  // 9.5px account labels landed under 3px and the canvas was unreadable. Now
+  // the SVG is rendered at its true size and the viewport scrolls, so a label
+  // is always the size it was designed to be whatever the pane width.
+  const viewportH = Math.min(760, Math.max(520, Math.round(H * zoom) + 8));
+
+  // Deliberate zoom-out for an overview, computed from the live pane size so it
+  // actually fits rather than guessing a factor.
+  const fitToView = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setZoom(Math.max(0.3, Math.min(1, (el.clientWidth - 12) / W)));
+  };
 
   return (
-    <div className="p-5 space-y-4">
+    <Page width="wide" className="space-y-4">
       {/* ── Network canvas (full width) ─────────────────────────────────── */}
       <div
         className="rounded-2xl overflow-hidden border"
@@ -211,7 +228,7 @@ export function GraphView({
             </div>
             <div className="w-px h-5" style={{ background: "var(--border)" }} />
             <button
-              onClick={() => setZoom((z) => Math.max(0.6, z - 0.1))}
+              onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - 0.1) * 100) / 100))}
               className="w-7 h-7 rounded-md border hover:bg-[var(--hover)]"
               style={{ borderColor: "var(--border)", color: "var(--text)" }}
               aria-label="Zoom out"
@@ -222,7 +239,7 @@ export function GraphView({
               {Math.round(zoom * 100)}%
             </div>
             <button
-              onClick={() => setZoom((z) => Math.min(2, z + 0.1))}
+              onClick={() => setZoom((z) => Math.min(2, Math.round((z + 0.1) * 100) / 100))}
               className="w-7 h-7 rounded-md border hover:bg-[var(--hover)]"
               style={{ borderColor: "var(--border)", color: "var(--text)" }}
               aria-label="Zoom in"
@@ -233,22 +250,29 @@ export function GraphView({
               onClick={() => setZoom(1)}
               className="text-[11px] rounded-md border px-2 py-1 hover:bg-[var(--hover)]"
               style={{ borderColor: "var(--border)", color: "var(--text)" }}
+              title="Back to actual size — labels at full readability"
             >
-              Reset
+              100%
+            </button>
+            <button
+              onClick={fitToView}
+              className="text-[11px] rounded-md border px-2 py-1 hover:bg-[var(--hover)]"
+              style={{ borderColor: "var(--border)", color: "var(--text)" }}
+              title="Zoom out until the whole width fits"
+            >
+              Fit
             </button>
           </div>
         </div>
 
-        <div className="relative" style={{ height: canvasHeight, overflow: "hidden", background: "var(--bg)" }}>
-          <div
-            className="absolute inset-0"
-            style={{
-              transform: `scale(${zoom})`,
-              transformOrigin: "center center",
-              transition: "transform 0.25s ease",
-            }}
-          >
-            <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+        <div className="relative" style={{ height: viewportH, background: "var(--bg)" }}>
+          <div ref={scrollRef} className="absolute inset-0 overflow-auto">
+            <svg
+              width={Math.round(W * zoom)}
+              height={Math.round(H * zoom)}
+              viewBox={`0 0 ${W} ${H}`}
+              style={{ display: "block" }}
+            >
               <defs>
                 <marker id="arrowRed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444" />
@@ -265,9 +289,18 @@ export function GraphView({
                 </radialGradient>
               </defs>
 
-              {/* Cluster frames — each ring captioned with its typology */}
+              {/* Cluster cards. Each ring is a titled panel — dot, typology,
+                  account count and money moved — so the canvas reads as a list
+                  of findings you can scan, instead of a field of loose circles
+                  you have to trace with the mouse. */}
               {CLUSTERS.map((c) => {
                 if (!c.nodeIds.some((id) => visibleIds.has(id))) return null;
+                const r = 14;
+                const hb = 34;
+                const head =
+                  `M ${c.x} ${c.y + r} A ${r} ${r} 0 0 1 ${c.x + r} ${c.y}` +
+                  ` L ${c.x + c.w - r} ${c.y} A ${r} ${r} 0 0 1 ${c.x + c.w} ${c.y + r}` +
+                  ` L ${c.x + c.w} ${c.y + hb} L ${c.x} ${c.y + hb} Z`;
                 return (
                   <g key={c.id} opacity={hoverIds ? 0.55 : 1}>
                     <rect
@@ -275,31 +308,41 @@ export function GraphView({
                       y={c.y}
                       width={c.w}
                       height={c.h}
-                      rx={16}
-                      fill={`${c.color}0A`}
-                      stroke={`${c.color}33`}
+                      rx={r}
+                      fill={`${c.color}08`}
+                      stroke={`${c.color}2E`}
                       strokeWidth={1}
                       strokeDasharray={c.kind === "pairs" ? "7 6" : undefined}
                     />
+                    <path d={head} fill={`${c.color}1C`} />
+                    <line
+                      x1={c.x}
+                      y1={c.y + hb}
+                      x2={c.x + c.w}
+                      y2={c.y + hb}
+                      stroke={`${c.color}2E`}
+                      strokeWidth={1}
+                    />
+                    <circle cx={c.x + 17} cy={c.y + 18} r={3.5} fill={c.color} />
                     <text
-                      x={c.x + 14}
-                      y={c.y + 18}
-                      fontSize={10.5}
+                      x={c.x + 29}
+                      y={c.y + 22}
+                      fontSize={11.5}
                       fill={c.color}
-                      letterSpacing="0.08em"
-                      fontWeight={600}
+                      letterSpacing="0.09em"
+                      fontWeight={700}
                     >
                       {c.label.toUpperCase()}
                     </text>
                     <text
-                      x={c.x + c.w - 14}
-                      y={c.y + 18}
-                      fontSize={9.5}
+                      x={c.x + c.w - 16}
+                      y={c.y + 22}
+                      fontSize={10.5}
                       textAnchor="end"
-                      fill="#64748b"
+                      fill="#94a3b8"
                       className="font-mono"
                     >
-                      {c.count} {c.kind === "pairs" ? "pairs" : "accounts"}
+                      {c.count} {c.kind === "pairs" ? "pairs" : "accounts"} · {formatINR(c.total)}
                     </text>
                   </g>
                 );
@@ -450,22 +493,14 @@ export function GraphView({
           </div>
 
           {/* HUD */}
-          <div className="pointer-events-none absolute left-3 bottom-3 flex gap-2">
+          {highCount > 0 && (
             <div
-              className="rounded-md border px-2.5 py-1.5 text-[11px] font-mono"
-              style={{ borderColor: "var(--border)", background: "rgba(0,0,0,0.45)", color: "var(--text)" }}
+              className="pointer-events-none absolute left-3 bottom-3 rounded-md border border-red-500/25 px-2.5 py-1.5 text-[11px] font-mono text-red-300"
+              style={{ background: "rgba(0,0,0,0.45)" }}
             >
-              MPC · differential-privacy ε=0.42
+              {highCount} HIGH RISK NODES DETECTED
             </div>
-            {highCount > 0 && (
-              <div
-                className="rounded-md border border-red-500/25 px-2.5 py-1.5 text-[11px] font-mono text-red-300"
-                style={{ background: "rgba(0,0,0,0.45)" }}
-              >
-                {highCount} HIGH RISK NODES DETECTED
-              </div>
-            )}
-          </div>
+          )}
           <div
             className="pointer-events-none absolute right-3 top-3 rounded-md border px-2.5 py-1.5 text-[11px] font-mono"
             style={{ borderColor: "var(--border)", background: "rgba(0,0,0,0.45)", color: "var(--text)" }}
@@ -475,33 +510,54 @@ export function GraphView({
         </div>
       </div>
 
-      {/* ── Reference rails, below the canvas ───────────────────────────── */}
-      <div className="grid grid-cols-12 gap-4">
-        <div
-          className="col-span-12 lg:col-span-4 rounded-2xl p-4 border"
-          style={{ background: "var(--panel)", borderColor: "var(--border)" }}
-        >
-          <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
-            Cluster Inspector
-          </div>
-          <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+      {/* ── Legend strip ───────────────────────────────────────────────────
+          A single line directly under the canvas. It used to be buried at the
+          bottom of the typology panel, which is not where anyone looks while
+          they are still reading the graph. */}
+      <div
+        className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border px-4 py-2.5 text-[12px]"
+        style={{ background: "var(--panel)", borderColor: "var(--border)", color: "var(--text)" }}
+      >
+        <LegendRow color="#ef4444" label="High risk" />
+        <LegendRow color="#f59e0b" label="Medium risk" />
+        <LegendRow color="#22c55e" label="Safe" />
+        <span className="flex items-center gap-2">
+          <span
+            className="grid place-items-center w-4 h-4 rounded-full border text-[8px] font-bold"
+            style={{ borderColor: "var(--muted)", color: "var(--text)" }}
+          >
+            n
+          </span>
+          Number in a node = counterparties
+        </span>
+        <span className="ml-auto text-[11.5px]" style={{ color: "var(--muted)" }}>
+          Hover a ring to isolate it · click any node for the full dossier
+        </span>
+      </div>
+
+      {/* ── Reference panels ───────────────────────────────────────────────
+          Equal-height columns, one subject each. Lists are capped by row count
+          rather than pixel height so nothing hides behind a nested scrollbar. */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
+        <Panel title="Cluster inspector">
+          <div className="grid grid-cols-4 gap-2 text-center">
             <Stat label="Nodes" value={String(NODES.length)} color="#38bdf8" />
             <Stat label="Edges" value={String(EDGES.length)} color="#a78bfa" />
             <Stat label="Rings" value={String(CLUSTERS.filter((c) => c.kind === "web").length)} color="#f59e0b" />
             <Stat label="High" value={String(highCount)} color="#ef4444" />
           </div>
           <div className="h-px my-4" style={{ background: "var(--border)" }} />
-          <div className="text-[11px] uppercase tracking-widest mb-2" style={{ color: "var(--muted)" }}>
+          <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
             Institutions ({displayBanks.length})
           </div>
-          <div className="space-y-2 max-h-40 overflow-auto pr-1">
+          <div className="mt-2.5 space-y-2">
             {displayBanks.map((b) => (
               <div key={b.id} className="flex items-center gap-2">
                 <span
-                  className="w-2.5 h-2.5 rounded-sm"
+                  className="w-2.5 h-2.5 shrink-0 rounded-sm"
                   style={{ background: b.color, boxShadow: `0 0 8px ${b.color}` }}
                 />
-                <span className="text-[12.5px]" style={{ color: "var(--text)" }}>
+                <span className="text-[12.5px] truncate" style={{ color: "var(--text)" }}>
                   {b.name}
                 </span>
                 <span className="ml-auto text-[11px] font-mono" style={{ color: "var(--muted)" }}>
@@ -510,28 +566,30 @@ export function GraphView({
               </div>
             ))}
           </div>
-        </div>
+        </Panel>
 
-        <div
-          className="col-span-12 lg:col-span-4 rounded-2xl p-4 border"
-          style={{ background: "var(--panel)", borderColor: "var(--border)" }}
-        >
-          <div className="text-[11px] uppercase tracking-widest mb-2" style={{ color: "var(--muted)" }}>
-            Detected typologies
-          </div>
+        <Panel title="Detected typologies">
           <div className="space-y-1.5">
             {CLUSTERS.filter((c) => c.kind === "web").map((c) => (
               <div
                 key={c.id}
-                className="flex items-center gap-2 rounded-md border px-2 py-1.5"
+                className="flex items-center gap-2.5 rounded-lg border px-2.5 py-2"
                 style={{ borderColor: `${c.color}33`, background: `${c.color}0D` }}
               >
-                <span className="w-2 h-2 rounded-full" style={{ background: c.color, boxShadow: `0 0 8px ${c.color}` }} />
-                <span className="text-[12px]" style={{ color: "var(--text)" }}>
-                  {c.label}
+                <span
+                  className="w-2 h-2 shrink-0 rounded-full"
+                  style={{ background: c.color, boxShadow: `0 0 8px ${c.color}` }}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12.5px] truncate" style={{ color: "var(--text-strong)" }}>
+                    {c.label}
+                  </span>
+                  <span className="block text-[10.5px]" style={{ color: "var(--muted)" }}>
+                    {c.count} accounts
+                  </span>
                 </span>
-                <span className="ml-auto text-[11px] font-mono" style={{ color: "var(--muted)" }}>
-                  {c.count} accts
+                <span className="shrink-0 text-right text-[12px] font-mono" style={{ color: c.color }}>
+                  {formatINR(c.total)}
                 </span>
               </div>
             ))}
@@ -541,59 +599,46 @@ export function GraphView({
               </div>
             )}
           </div>
-          <div className="h-px my-4" style={{ background: "var(--border)" }} />
-          <div className="text-[11px] uppercase tracking-widest mb-2" style={{ color: "var(--muted)" }}>
-            Legend
-          </div>
-          <div className="space-y-1.5 text-[12px]" style={{ color: "var(--text)" }}>
-            <LegendRow color="#ef4444" label="High-risk account" />
-            <LegendRow color="#f59e0b" label="Medium-risk account" />
-            <LegendRow color="#22c55e" label="Safe account" />
-            <div className="flex items-center gap-2 pt-1">
-              <span className="grid place-items-center w-4 h-4 rounded-full border text-[8px] font-bold" style={{ borderColor: "#e2e8f0", color: "var(--text)" }}>
-                n
-              </span>
-              <span>Number inside a node = counterparties</span>
-            </div>
-          </div>
-        </div>
+        </Panel>
 
-        <div
-          className="col-span-12 lg:col-span-4 rounded-2xl p-4 border"
-          style={{ background: "var(--panel)", borderColor: "var(--border)" }}
-        >
-          <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
-            Largest hops
-          </div>
-          <div className="mt-2 max-h-64 overflow-auto pr-1 space-y-1.5">
+        <Panel title="Largest hops">
+          <div className="space-y-1.5">
             {EDGES.slice()
               .sort((a, b) => b.amount - a.amount)
-              .slice(0, 10)
-              .map((e) => {
+              .slice(0, 8)
+              .map((e, i) => {
                 const s = nodeIndex.get(e.source);
                 const t = nodeIndex.get(e.target);
                 return (
                   <div
                     key={e.id}
-                    className="flex items-center gap-2 text-[12px] rounded-md px-2 py-1.5 border"
+                    className="flex items-center gap-2.5 rounded-lg border px-2.5 py-2 text-[12px]"
                     style={{ background: "var(--bg)", borderColor: "var(--border)" }}
                   >
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: severityColor(e.severity) }} />
-                    <span className="font-mono truncate" style={{ color: "var(--muted)" }}>
-                      {shortLabel(s?.label ?? e.source)}→{shortLabel(t?.label ?? e.target)}
+                    <span
+                      className="grid h-4 w-4 shrink-0 place-items-center rounded text-[9.5px] font-semibold"
+                      style={{ background: `${severityColor(e.severity)}1F`, color: severityColor(e.severity) }}
+                    >
+                      {i + 1}
                     </span>
-                    <span className="ml-auto font-mono" style={{ color: "var(--text)" }}>
+                    <span className="min-w-0 flex-1 truncate font-mono" style={{ color: "var(--muted)" }}>
+                      {shortLabel(s?.label ?? e.source)} → {shortLabel(t?.label ?? e.target)}
+                    </span>
+                    <span className="shrink-0 font-mono" style={{ color: "var(--text-strong)" }}>
                       {formatINR(e.amount)}
                     </span>
                   </div>
                 );
               })}
           </div>
-        </div>
+        </Panel>
       </div>
 
       {/* ── Edge log ────────────────────────────────────────────────────── */}
-      <div className="rounded-2xl border" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
+      <div
+        className="rounded-2xl border overflow-hidden"
+        style={{ background: "var(--panel)", borderColor: "var(--border)" }}
+      >
         <div
           className="flex items-center justify-between px-4 py-3 border-b"
           style={{ borderColor: "var(--border)" }}
@@ -601,18 +646,23 @@ export function GraphView({
           <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
             Edge Log
           </div>
-          <div className="text-[11px] font-mono" style={{ color: "var(--muted)" }}>
+          <div className="text-[11px] font-mono tabular-nums" style={{ color: "var(--muted)" }}>
             {visibleEdges.length} events
           </div>
         </div>
-        <div className="max-h-56 overflow-auto">
+        {/* 224px showed barely four rows on a desktop monitor. A taller box with
+            a pinned header reads as a table you can actually scan. */}
+        <div className="max-h-[340px] overflow-auto">
           <table className="w-full text-[12px]">
-            <thead style={{ color: "var(--muted)" }} className="text-left">
-              <tr>
-                <th className="px-4 py-2 font-medium">Time</th>
+            <thead className="sticky top-0 z-10">
+              <tr
+                className="text-left text-[10.5px] uppercase tracking-widest backdrop-blur"
+                style={{ color: "var(--muted)", background: "var(--panel-strong)" }}
+              >
+                <th className="px-4 py-2 font-medium whitespace-nowrap">Time</th>
                 <th className="px-4 py-2 font-medium">From</th>
                 <th className="px-4 py-2 font-medium">To</th>
-                <th className="px-4 py-2 font-medium">Amount</th>
+                <th className="px-4 py-2 font-medium text-right whitespace-nowrap">Amount</th>
                 <th className="px-4 py-2 font-medium">Severity</th>
                 <th className="px-4 py-2 font-medium">Note</th>
               </tr>
@@ -623,7 +673,7 @@ export function GraphView({
                 const t = nodeIndex.get(e.target);
                 return (
                   <tr key={e.id} className="border-t hover:bg-[var(--hover)]" style={{ borderColor: "var(--border)" }}>
-                    <td className="px-4 py-2 font-mono" style={{ color: "var(--muted)" }}>
+                    <td className="px-4 py-2 font-mono whitespace-nowrap tabular-nums" style={{ color: "var(--muted)" }}>
                       {e.timestamp}
                     </td>
                     <td className="px-4 py-2 font-mono" style={{ color: "var(--text)" }}>
@@ -632,7 +682,7 @@ export function GraphView({
                     <td className="px-4 py-2 font-mono" style={{ color: "var(--text)" }}>
                       {t?.hash ?? e.target}
                     </td>
-                    <td className="px-4 py-2 font-mono">
+                    <td className="px-4 py-2 text-right font-mono whitespace-nowrap tabular-nums">
                       {e.currency === "INR" ? formatINR(e.amount) : `${e.currency} ${e.amount.toLocaleString()}`}
                     </td>
                     <td className="px-4 py-2">
@@ -649,8 +699,19 @@ export function GraphView({
         </div>
       </div>
 
-      <NodeDetailDrawer node={selected} edges={EDGES} onClose={() => setSelected(null)} />
-    </div>
+      <NodeDetailDrawer
+        node={selected}
+        edges={EDGES}
+        onClose={() => setSelected(null)}
+        onOpenSAR={
+          onOpenSAR &&
+          (() => {
+            setSelected(null);
+            onOpenSAR();
+          })
+        }
+      />
+    </Page>
   );
 }
 
@@ -668,6 +729,23 @@ function curvePath(x1: number, y1: number, x2: number, y2: number) {
   const cx = mx + (nx / len) * off;
   const cy = my + (ny / len) * off;
   return `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+}
+
+// Shared shell for the three reference columns. Having one component own the
+// padding, radius and header means the columns cannot drift apart visually the
+// way they had when each was hand-rolled.
+function Panel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section
+      className="flex h-full flex-col rounded-2xl border p-4"
+      style={{ background: "var(--panel)", borderColor: "var(--border)" }}
+    >
+      <h3 className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
+        {title}
+      </h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
 }
 
 function Stat({ label, value, color }: { label: string; value: string; color: string }) {

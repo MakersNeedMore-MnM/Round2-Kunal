@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { MetricCard } from "../ui/MetricCard";
 import { SeverityBadge } from "../ui/SeverityBadge";
+import { Page, PanelHeader } from "../ui/Page";
 import { formatINR, detectPattern } from "@/lib/mockData";
 import type { Transaction } from "@/lib/mockData";
 import { useDashboardStats, useAlerts, useTransactions } from "@/lib/hooks";
@@ -38,9 +39,9 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
   }, {});
 
   return (
-    <div className="p-5 min-h-full" style={{ background: "var(--bg)" }}>
+    <Page>
       {/* KPI Row */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <MetricCard
           label="Total Transactions"
           value={total.toLocaleString("en-IN")}
@@ -82,17 +83,17 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
       {/* Middle strip — 2 panels */}
       <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-2xl p-4 border" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Risk Heatmap</div>
-              <div className="mt-1 text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>Severity × Date</div>
-            </div>
-            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
-              <span className="w-2 h-2 rounded-sm bg-emerald-500/60" /><span>low</span>
-              <span className="w-2 h-2 rounded-sm bg-amber-500/70" /><span>med</span>
-              <span className="w-2 h-2 rounded-sm bg-red-500/80" /><span>high</span>
-            </div>
-          </div>
+          <PanelHeader
+            eyebrow="Risk Heatmap"
+            title="Severity × Date"
+            right={
+              <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted)" }}>
+                <span className="w-2 h-2 rounded-sm bg-emerald-500/60" /><span>low</span>
+                <span className="w-2 h-2 rounded-sm bg-amber-500/70" /><span>med</span>
+                <span className="w-2 h-2 rounded-sm bg-red-500/80" /><span>high</span>
+              </div>
+            }
+          />
           {heat.columns.length === 0 ? (
             <div className="mt-8 mb-6 text-center text-[12.5px]" style={{ color: "var(--muted-2)" }}>
               Upload a CSV to populate the heatmap.
@@ -128,13 +129,13 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
         </div>
 
         <div className="rounded-2xl p-4 border" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Multi-Agent Fleet</div>
-              <div className="mt-1 text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>4 agents · online</div>
-            </div>
-            <span className="text-[11px] rounded px-1.5 py-0.5 bg-sky-500/10 text-sky-300 border border-sky-500/25">LLM · v4.2</span>
-          </div>
+          <PanelHeader
+            eyebrow="Multi-Agent Fleet"
+            title="4 agents · online"
+            right={
+              <span className="text-[11px] rounded px-1.5 py-0.5 bg-sky-500/10 text-sky-300 border border-sky-500/25">LLM · v4.2</span>
+            }
+          />
           <div className="mt-3 grid grid-cols-2 gap-2.5">
             {[
               { n: "Graph Analyst", c: "#38bdf8", load: 62 },
@@ -159,15 +160,18 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
         </div>
       </div>
 
-      {/* Alert Feed + Typology */}
-      <div className="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 rounded-2xl border overflow-hidden" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
-          <div className="p-4 flex items-center justify-between border-b" style={{ borderColor: "var(--border)" }}>
-            <div>
+      {/* Alert Feed + Typology. A fractional 2/3 + 1/3 split gave the typology
+          rail whatever was left over, which at 1024px was 320px of squeezed
+          progress bars. Sizing that column in pixels instead keeps it legible
+          and hands every extra pixel to the feed, which is what benefits. */}
+      <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
+        <div className="min-w-0 flex flex-col rounded-2xl border overflow-hidden" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
+          <div className="shrink-0 p-4 flex items-start justify-between gap-3 border-b" style={{ borderColor: "var(--border)" }}>
+            <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Real-Time Alert Feed</div>
               <div className="mt-0.5 text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>Transaction alerts</div>
             </div>
-            <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--muted)" }}>
+            <div className="flex shrink-0 items-center gap-2 text-[11px]" style={{ color: "var(--muted)" }}>
               <span className={`w-1.5 h-1.5 rounded-full ${liveFeed ? "bg-emerald-400 animate-blink" : "bg-slate-500"}`} />
               {liveFeed ? "streaming" : "paused"}
               {alerts.length > 0 && <span>· {alerts.length} alert{alerts.length !== 1 ? "s" : ""}</span>}
@@ -178,13 +182,15 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
             <div className="p-10 text-center">
               <div className="text-[32px] mb-3 opacity-30">◇</div>
               <div className="text-[14px] font-medium" style={{ color: "var(--text-strong)" }}>No alerts yet</div>
-              <div className="mt-1 text-[12.5px]" style={{ color: "var(--muted-2)" }}>Upload a CSV file to start monitoring transactions. High-risk transactions will trigger alerts here.</div>
+              <div className="mt-1 text-[12.5px] mx-auto max-w-sm" style={{ color: "var(--muted-2)" }}>Upload a CSV file to start monitoring transactions. High-risk transactions will trigger alerts here.</div>
             </div>
           ) : (
-            <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+            // Bounded so a long alert history scrolls inside the card instead of
+            // stretching the dashboard to several screens.
+            <div className="divide-y max-h-[520px] overflow-y-auto" style={{ borderColor: "var(--border)" }}>
               {Object.entries(alertsByDate).map(([date, dateAlerts]) => (
                 <div key={date}>
-                  <div className="px-4 py-2 text-[11px] uppercase tracking-widest font-semibold" style={{ color: "var(--muted)", background: "var(--bg)" }}>
+                  <div className="sticky top-0 z-10 px-4 py-2 text-[11px] uppercase tracking-widest font-semibold backdrop-blur" style={{ color: "var(--muted)", background: "var(--panel-strong)" }}>
                     {date}
                   </div>
                   {dateAlerts.map((a) => (
@@ -219,7 +225,7 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
                         <div className="px-4 pb-4 ml-9">
                           <div className="rounded-xl border p-4 space-y-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
                             <div className="text-[11px] uppercase tracking-widest text-sky-300">Investigation Details</div>
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                               <div>
                                 <div className="text-[10px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Alert Title</div>
                                 <div className="mt-0.5 text-[13px]" style={{ color: "var(--text)" }}>{a.title}</div>
@@ -260,9 +266,8 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
           )}
         </div>
 
-        <div className="rounded-2xl p-4 border" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
-          <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>Typology Distribution</div>
-          <div className="mt-1 text-[15px] font-semibold" style={{ color: "var(--text-strong)" }}>Detected patterns</div>
+        <div className="flex flex-col rounded-2xl p-4 border" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
+          <PanelHeader eyebrow="Typology Distribution" title="Detected patterns" />
           {typology.total === 0 ? (
             <div className="mt-8 mb-6 text-center text-[12.5px]" style={{ color: "var(--muted-2)" }}>
               No suspicious typologies detected yet.
@@ -271,12 +276,12 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
             <div className="mt-4 space-y-3">
               {typology.rows.map((r) => (
                 <div key={r.name}>
-                  <div className="flex items-center justify-between text-[12px]">
-                    <div className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ background: r.c }} />
-                      <span style={{ color: "var(--text)" }}>{r.name}</span>
+                  <div className="flex items-center justify-between gap-3 text-[12px]">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="w-1.5 h-1.5 shrink-0 rounded-full" style={{ background: r.c }} />
+                      <span className="truncate" style={{ color: "var(--text)" }}>{r.name}</span>
                     </div>
-                    <span className="font-mono" style={{ color: "var(--muted)" }}>{r.count} · {r.pct}%</span>
+                    <span className="shrink-0 font-mono tabular-nums" style={{ color: "var(--muted)" }}>{r.count} · {r.pct}%</span>
                   </div>
                   <div className="mt-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
                     <div className="h-full" style={{ width: `${r.pct}%`, background: `linear-gradient(90deg, ${r.c}, ${r.c}44)` }} />
@@ -285,16 +290,20 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
               ))}
             </div>
           )}
-          <div className="h-px my-4" style={{ background: "var(--border)" }} />
-          <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
-            <div className="text-[11px] uppercase tracking-widest text-sky-300">Alert Summary</div>
-            <div className="mt-1 text-[13px] leading-relaxed" style={{ color: "var(--text)" }}>
-              {openAlerts > 0 ? `${openAlerts} alert${openAlerts !== 1 ? "s" : ""} require review.` : "No pending alerts. All systems operating normally."}
+          {/* Sits on the floor of the card so the rail lines up with the bottom
+              of the feed beside it rather than trailing off mid-panel. */}
+          <div className="mt-auto pt-4">
+            <div className="h-px mb-4" style={{ background: "var(--border)" }} />
+            <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
+              <div className="text-[11px] uppercase tracking-widest text-sky-300">Alert Summary</div>
+              <div className="mt-1 text-[13px] leading-relaxed" style={{ color: "var(--text)" }}>
+                {openAlerts > 0 ? `${openAlerts} alert${openAlerts !== 1 ? "s" : ""} require review.` : "No pending alerts. All systems operating normally."}
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
+    </Page>
   );
 }
 

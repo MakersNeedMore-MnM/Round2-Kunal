@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  bankById,
   bankForAccount,
   detectPattern,
   formatINR,
@@ -11,6 +10,8 @@ import {
   type GraphNode,
   type Typology,
 } from "@/lib/mockData";
+import { createSAR, useSARReports } from "@/lib/hooks";
+import { useAuth } from "@/components/AuthProvider";
 import { SeverityBadge } from "./ui/SeverityBadge";
 
 type Flow = {
@@ -26,12 +27,16 @@ export function NodeDetailDrawer({
   node,
   edges,
   onClose,
+  onOpenSAR,
 }: {
   node: GraphNode | null;
   edges: GraphEdge[];
   onClose: () => void;
+  // Lets the drawer hand the investigator straight to the report it just filed.
+  onOpenSAR?: () => void;
 }) {
   const open = !!node;
+  const { user } = useAuth();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -89,15 +94,17 @@ export function NodeDetailDrawer({
     };
   }, [related, node]);
 
-  const connectedBankIds = useMemo(() => {
+  // The institutions that actually settled this account's transfers, read from
+  // the uploaded rows. It used to hash the counterparty id into a fixed list of
+  // invented bank names, so the drawer named banks the data had never mentioned.
+  const connectedBanks = useMemo(() => {
     if (!node) return [];
-    const set = new Set<string>();
+    const names = new Set<string>();
     related.forEach((e) => {
-      const otherId = e.source === node.id ? e.target : e.source;
-      const bank = bankForAccount(otherId);
-      set.add(bank.id);
+      const other = e.source === node.id ? e.target : e.source;
+      names.add(e.bank?.trim() || bankForAccount(other).name);
     });
-    return Array.from(set).map((id) => bankById(id));
+    return Array.from(names).map((name) => ({ name, color: bankTint(name) }));
   }, [node, related]);
 
   // Risk bars derived from this account's own traffic, so two accounts in the
@@ -107,10 +114,56 @@ export function NodeDetailDrawer({
     return {
       velocity: clamp(sevFloor + flow.burst * 16 + (dominant?.key === "layering" ? 22 : 0)),
       fanOut: clamp(8 + Math.max(flow.inCount, flow.outCount) * 17),
-      counterparty: clamp(Math.round(flow.highShare * 88) + connectedBankIds.length * 4),
-      kyc: clamp(96 - Math.round(flow.highShare * 62) - related.length * 3, 8),
+      counterparty: clamp(Math.round(flow.highShare * 88) + connectedBanks.length * 4),
+      spread: clamp(connectedBanks.length * 24),
     };
-  }, [node, flow, dominant, connectedBankIds.length, related.length]);
+  }, [node, flow, dominant, connectedBanks.length]);
+
+  // One plain sentence plus at most three short facts, all from this account's
+  // own traffic. The previous version wrote three dense sentences per typology
+  // with FATF codes in them, which nobody could read at a glance.
+  const read = useMemo(
+    () => (node ? plainRead(node, dominant, flow, connectedBanks.length) : null),
+    [node, dominant, flow, connectedBanks.length]
+  );
+
+  // ── Escalation ────────────────────────────────────────────────────────────
+  const { reports } = useSARReports();
+  const [filing, setFiling] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [node?.id]);
+
+  // A report already on file for this account, matched on the `account` field
+  // the drawer writes. useSARReports is a live snapshot, so the button flips to
+  // its filed state as soon as Firestore acknowledges the write — and is still
+  // in that state when the drawer is reopened tomorrow.
+  const existing = useMemo(
+    () => (node ? (reports.find((r) => r.account === node.id) ?? null) : null),
+    [reports, node]
+  );
+
+  const escalate = useCallback(async () => {
+    if (!node || !user || filing || existing) return;
+    setFailed(false);
+    setFiling(true);
+    try {
+      await createSAR(user.uid, {
+        account: node.id,
+        title: `${dominant ? dominant.label : "Suspicious activity"} — ${node.label}`,
+        amount: flow.inAmount + flow.outAmount,
+        status: "Draft",
+        severity: node.severity,
+      });
+    } catch (err) {
+      console.error("[escalate]", err);
+      setFailed(true);
+    } finally {
+      setFiling(false);
+    }
+  }, [node, user, filing, existing, dominant, flow.inAmount, flow.outAmount]);
 
   return (
     <>
@@ -182,17 +235,33 @@ export function NodeDetailDrawer({
               </div>
 
               <div className="p-5 overflow-auto space-y-5 flex-1">
-                <section>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] uppercase tracking-widest text-emerald-300">Instant AI Explanation</span>
-                    <span className="text-[10px] rounded px-1.5 py-0.5 bg-emerald-500/15 border border-emerald-500/25 text-emerald-300">
-                      {dominant ? `${typologyCode(dominant.key)} · confidence ${confidenceOf(flow, !!dominant)}` : `confidence ${confidenceOf(flow, false)}`}
-                    </span>
-                  </div>
-                  <div className="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-[13px] leading-relaxed" style={{ color: "var(--text)" }}>
-                    {aiExplanation(node, dominant, flow)}
-                  </div>
-                </section>
+                {read && (
+                  <section>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] uppercase tracking-widest text-emerald-300">
+                        AI explanation
+                      </span>
+                      <span className="shrink-0 text-[10px] rounded px-1.5 py-0.5 bg-emerald-500/15 border border-emerald-500/25 text-emerald-300">
+                        {confidencePct(flow, !!dominant)}% confident
+                      </span>
+                    </div>
+                    <div className="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3">
+                      <p className="text-[13.5px] leading-snug" style={{ color: "var(--text-strong)" }}>
+                        {read.line}
+                      </p>
+                      {read.facts.length > 0 && (
+                        <ul className="mt-2 space-y-1">
+                          {read.facts.map((f) => (
+                            <li key={f} className="flex gap-1.5 text-[12px]" style={{ color: "var(--muted)" }}>
+                              <span className="text-emerald-400/70">·</span>
+                              <span>{f}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </section>
+                )}
 
                 {patterns.length > 0 && (
                   <section>
@@ -211,6 +280,9 @@ export function NodeDetailDrawer({
                             style={{ background: p.t.color, boxShadow: `0 0 8px ${p.t.color}` }}
                           />
                           <span className="text-[12.5px]" style={{ color: "var(--text)" }}>{p.t.label}</span>
+                          <span className="text-[10px] font-mono" style={{ color: "var(--muted-2)" }}>
+                            {typologyCode(p.t.key)}
+                          </span>
                           <span className="ml-auto text-[11px] font-mono" style={{ color: "var(--muted)" }}>
                             {p.count} hop{p.count > 1 ? "s" : ""} · {formatINR(p.amount)}
                           </span>
@@ -228,6 +300,7 @@ export function NodeDetailDrawer({
                     {related
                       .slice()
                       .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+                      .slice(0, 6)
                       .map((e) => {
                         const otherId = e.source === node.id ? e.target : e.source;
                         const dir = e.source === node.id ? "out" : "in";
@@ -256,17 +329,22 @@ export function NodeDetailDrawer({
                         );
                       })}
                   </ol>
+                  {related.length > 6 && (
+                    <div className="mt-2 pl-4 text-[11.5px]" style={{ color: "var(--muted-2)" }}>
+                      + {related.length - 6} more transfer{related.length - 6 > 1 ? "s" : ""} on this account
+                    </div>
+                  )}
                 </section>
 
-                {connectedBankIds.length > 0 && (
+                {connectedBanks.length > 0 && (
                   <section>
                     <div className="text-[11px] uppercase tracking-widest mb-2" style={{ color: "var(--muted)" }}>
-                      Connected institutions
+                      Banks involved
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {connectedBankIds.map((b) => (
+                      {connectedBanks.map((b) => (
                         <span
-                          key={b.id}
+                          key={b.name}
                           className="inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[12px]"
                           style={{ borderColor: `${b.color}44`, background: `${b.color}12`, color: b.color }}
                         >
@@ -284,18 +362,48 @@ export function NodeDetailDrawer({
                     <SignalBar label="Velocity anomaly" value={signals.velocity} color="#ef4444" />
                     <SignalBar label="Fan-out ratio" value={signals.fanOut} color="#f59e0b" />
                     <SignalBar label="Counterparty risk" value={signals.counterparty} color="#f59e0b" />
-                    <SignalBar label="KYC completeness" value={signals.kyc} color="#38bdf8" />
+                    <SignalBar label="Cross-bank spread" value={signals.spread} color="#38bdf8" />
                   </div>
                 </section>
               </div>
 
-              <div className="p-4 border-t flex items-center gap-2" style={{ borderColor: "var(--border)" }}>
-                <button className="flex-1 rounded-lg border px-3 py-2 text-[13px] hover:bg-[var(--hover)] transition" style={{ borderColor: "var(--border)", color: "var(--text)", background: "var(--chip)" }}>
-                  Freeze account
-                </button>
-                <button className="flex-1 rounded-lg border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-3 py-2 text-[13px] text-emerald-200 shadow-glow">
-                  Escalate to SAR →
-                </button>
+              <div className="p-4 border-t" style={{ borderColor: "var(--border)" }}>
+                {existing ? (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[12.5px] text-emerald-200">
+                      ✓ Report filed · {existing.status}
+                    </div>
+                    {onOpenSAR && (
+                      <button
+                        onClick={onOpenSAR}
+                        className="shrink-0 rounded-lg border px-3 py-2 text-[13px] hover:bg-[var(--hover)] transition"
+                        style={{ borderColor: "var(--border)", color: "var(--text)", background: "var(--chip)" }}
+                      >
+                        Open →
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      onClick={escalate}
+                      disabled={filing || !user}
+                      className="w-full rounded-lg border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-3 py-2 text-[13px] text-emerald-200 shadow-glow disabled:opacity-50"
+                    >
+                      {filing ? "Filing report…" : "Escalate to SAR →"}
+                    </button>
+                    {failed && (
+                      <div className="mt-2 text-[11.5px] text-red-300">
+                        Could not save the report. Check your connection and try again.
+                      </div>
+                    )}
+                    {!user && (
+                      <div className="mt-2 text-[11.5px]" style={{ color: "var(--muted-2)" }}>
+                        Sign in to file a report.
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </>
           )}
@@ -332,6 +440,15 @@ function clamp(v: number, min = 0, max = 98) {
   return Math.max(min, Math.min(max, Math.round(v)));
 }
 
+// Hashed rather than indexed, so one bank keeps the same colour in every drawer.
+const BANK_TINTS = ["#38bdf8", "#a78bfa", "#f59e0b", "#22c55e", "#ec4899", "#06b6d4", "#f97316", "#14b8a6"];
+
+function bankTint(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 9973;
+  return BANK_TINTS[h % BANK_TINTS.length];
+}
+
 // Where the account sits in the chain of custody — derived from whether money
 // only arrives, only leaves, or passes straight through.
 function roleOf(flow: Flow) {
@@ -341,14 +458,8 @@ function roleOf(flow: Flow) {
   return "Isolated";
 }
 
-function roleClause(flow: Flow) {
-  if (flow.inCount && flow.outCount) return "an intermediary hop";
-  if (flow.outCount) return "the originating source";
-  if (flow.inCount) return "a terminal beneficiary";
-  return "an isolated account";
-}
-
-// FATF-style reference codes so each typology reads as a distinct finding.
+// FATF-style reference codes, shown against the matched typologies rather than
+// inside the explanation — a code is a filing reference, not an explanation.
 const TYPOLOGY_CODES: Record<string, string> = {
   layering: "AML-TYP-04",
   structuring: "AML-TYP-02",
@@ -362,41 +473,57 @@ function typologyCode(key: string) {
   return TYPOLOGY_CODES[key] ?? "AML-TYP-00";
 }
 
-function confidenceOf(flow: Flow, tagged: boolean) {
+function confidencePct(flow: Flow, tagged: boolean) {
   const base = tagged ? 0.82 : 0.61;
-  return Math.min(0.97, base + flow.highShare * 0.12 + Math.min(0.04, flow.inCount * 0.01)).toFixed(2);
+  const v = Math.min(0.97, base + flow.highShare * 0.12 + Math.min(0.04, flow.inCount * 0.01));
+  return Math.round(v * 100);
 }
 
-// The narrative is built from the account's own typology and traffic, so every
-// node in the graph explains itself differently.
-function aiExplanation(node: GraphNode, dominant: Typology | null, flow: Flow) {
-  const role = roleClause(flow);
-  const total = formatINR(flow.inAmount + flow.outAmount);
-  const counterparties = flow.inCount + flow.outCount;
-  const traffic = `${flow.inCount} inbound / ${flow.outCount} outbound transfer${counterparties === 1 ? "" : "s"} totalling ${total}`;
+// One sentence per typology, written the way you would say it out loud. No
+// account handles, no codes, no traffic counts — those are on screen already.
+const PATTERN_LINE: Record<string, string> = {
+  layering:
+    "Money lands here and is pushed straight on again, a little smaller each hop, so the trail back to its source goes cold.",
+  mule:
+    "This account collects lots of small deposits from people with no connection to each other, then pays them out as one lump.",
+  structuring:
+    "One large sum was broken into several payments, each kept just under the ₹10 lakh amount a bank has to report.",
+  shell:
+    "Companies with no visible trade are paying money in, and the balance leaves again straight away.",
+  offshore:
+    "Money is gathered here from within the country and then wired out to accounts abroad.",
+  roundtrip:
+    "Money goes out and comes back through connected accounts, so it ends up looking like it was earned.",
+};
 
-  switch (dominant?.key) {
-    case "layering":
-      return `${node.hash} sits on a rapid-layering chain as ${role}. Funds arrive and are pushed onward almost immediately, each hop shaving a small margin so the trail thins as it moves — ${traffic}. Sequential same-day hops across different institutions defeat single-bank monitoring, which is the signature of typology ${typologyCode("layering")}.`;
-    case "mule":
-      return `${node.hash} is part of a money-mule network, acting as ${role}. The ring collects many small deposits from unrelated individual accounts and consolidates them into one onward payout — ${traffic}. Deposit sizes cluster tightly and the funders share no commercial relationship, matching typology ${typologyCode("mule")}.`;
-    case "structuring":
-      return `${node.hash} appears in a structuring / smurfing fan-out as ${role}. A single source splits one large sum into several near-identical transfers deliberately parked just under the ₹10L reporting threshold — ${traffic}. Threshold-hugging amounts on the same day are the classic marker of typology ${typologyCode("structuring")}.`;
-    case "shell":
-      return `${node.hash} is wired into a shell-corporation funnel as ${role}. Several corporate entities with no visible trading activity route wire transfers into one beneficiary that immediately forwards the pooled balance — ${traffic}. Inflows with no matching invoices or payroll place this under typology ${typologyCode("shell")}.`;
-    case "offshore":
-      return `${node.hash} participates in an offshore transfer scheme as ${role}. Domestic funds are staged into a single collection account and then split across SWIFT wires to overseas beneficiaries — ${traffic}. The staging-then-exit shape and cross-border settlement match typology ${typologyCode("offshore")}.`;
-    case "roundtrip":
-      return `${node.hash} shows a round-trip / U-turn pattern as ${role}. Value leaves and returns through connected counterparties, giving illicit funds an apparently legitimate origin — ${traffic}. Circular settlement with no economic purpose maps to typology ${typologyCode("roundtrip")}.`;
-    default:
-      break;
+const SEVERITY_LINE: Record<string, string> = {
+  high: "The size and spread of this activity sit well outside normal use, though the payment notes don't name a known scheme.",
+  medium: "Bigger than everyday retail activity, but the counterparties are steady and nothing is being passed along a chain.",
+  safe: "Ordinary activity — few counterparties and amounts in line with normal day-to-day use.",
+};
+
+// The whole explanation: a plain sentence about what the pattern is, plus at
+// most three short facts about this account in particular.
+function plainRead(node: GraphNode, dominant: Typology | null, flow: Flow, bankCount: number) {
+  const line = (dominant && PATTERN_LINE[dominant.key]) || SEVERITY_LINE[node.severity];
+  const facts: string[] = [];
+
+  if (flow.inCount && flow.outCount) {
+    facts.push(
+      `Took in ${formatINR(flow.inAmount)}, sent on ${formatINR(flow.outAmount)} — it does not hold the money.`
+    );
+  } else if (flow.outCount) {
+    facts.push(`Sent ${formatINR(flow.outAmount)} to ${plural(flow.outCount, "account")}.`);
+  } else if (flow.inCount) {
+    facts.push(`Received ${formatINR(flow.inAmount)} from ${plural(flow.inCount, "account")}.`);
   }
 
-  if (node.severity === "high") {
-    return `${node.hash} is flagged high-risk as ${role}, with ${traffic}. Volume and counterparty behaviour sit well above this account's baseline, though the narrations do not match a named typology — recommend manual triage before filing.`;
-  }
-  if (node.severity === "medium") {
-    return `${node.hash} shows elevated value as ${role}, with ${traffic}. Amounts are above the routine-retail band but the counterparties are stable and no layering structure is present. Continued monitoring is sufficient for now.`;
-  }
-  return `${node.hash} shows normal activity as ${role}, with ${traffic}. It transacts with a single counterparty in line with its KYC-declared profile, and no laundering typology matched its narrations.`;
+  if (flow.burst > 1) facts.push(`${flow.burst} of those transfers happened on a single day.`);
+  if (bankCount > 1) facts.push(`Spread over ${bankCount} different banks.`);
+
+  return { line, facts: facts.slice(0, 3) };
+}
+
+function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }

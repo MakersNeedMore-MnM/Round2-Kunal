@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTransactions, useDeleteTransaction } from "@/lib/hooks";
 import { formatINR, detectPattern, type Severity } from "@/lib/mockData";
 import { SeverityBadge } from "../ui/SeverityBadge";
+import { Page } from "../ui/Page";
 
 export function TransactionsView() {
   const { transactions, loading } = useTransactions();
@@ -26,9 +27,9 @@ export function TransactionsView() {
   });
 
   return (
-    <div className="p-5 min-h-full">
+    <Page width="wide">
       <div
-        className="rounded-2xl border"
+        className="rounded-2xl border overflow-hidden"
         style={{ background: "var(--panel)", borderColor: "var(--border)" }}
       >
         <div
@@ -40,28 +41,32 @@ export function TransactionsView() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by account, bank, note, amount..."
-            className="flex-1 min-w-[240px] rounded-lg border px-3 py-2 text-[13px] outline-none focus:border-emerald-500/40"
+            className="h-9 flex-1 min-w-[240px] rounded-lg border px-3 text-[13px] outline-none focus:border-emerald-500/40"
             style={{ background: "var(--chip)", borderColor: "var(--border)", color: "var(--text)" }}
           />
-          <div className="flex gap-1">
+          {/* Segmented control rather than four loose buttons — same shape as the
+              tab bar on the upload screen, so the two toolbars read as a set. */}
+          <div
+            className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border p-1"
+            style={{ borderColor: "var(--border)", background: "var(--chip)" }}
+          >
             {(["all", "high", "medium", "safe"] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setSeverity(s)}
-                className={`rounded-lg border px-3 py-2 text-[12px] capitalize transition ${
-                  severity === s ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200" : ""
-                }`}
+                aria-pressed={severity === s}
+                className="rounded-md px-3 py-1 text-[12px] capitalize transition"
                 style={
-                  severity !== s
-                    ? { borderColor: "var(--border)", background: "var(--chip)", color: "var(--text)" }
-                    : undefined
+                  severity === s
+                    ? { background: "var(--panel)", color: "var(--text-strong)", boxShadow: "0 1px 0 rgba(0,0,0,.25)" }
+                    : { color: "var(--muted-2)" }
                 }
               >
                 {s}
               </button>
             ))}
           </div>
-          <div className="text-[12px]" style={{ color: "var(--muted-2)" }}>
+          <div className="ml-auto shrink-0 text-[12px] tabular-nums" style={{ color: "var(--muted-2)" }}>
             {filtered.length} of {transactions.length}
           </div>
         </div>
@@ -85,22 +90,24 @@ export function TransactionsView() {
         )}
 
         {!loading && transactions.length > 0 && (
-          <div className="overflow-auto">
+          // Bounded scroll box with a pinned header row: scrolling a 500-row
+          // import no longer leaves you guessing which column you are reading.
+          <div className="overflow-auto max-h-[calc(100vh-260px)]">
             <table className="w-full text-[13px]">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr
-                  className="text-[11px] uppercase tracking-widest text-left"
-                  style={{ background: "var(--chip)", color: "var(--muted)" }}
+                  className="text-[11px] uppercase tracking-widest text-left backdrop-blur"
+                  style={{ background: "var(--panel-strong)", color: "var(--muted)" }}
                 >
-                  <th className="px-4 py-2">Date</th>
-                  <th className="px-4 py-2">From</th>
-                  <th className="px-4 py-2">To</th>
-                  <th className="px-4 py-2">Bank</th>
-                  <th className="px-4 py-2 text-right">Amount</th>
-                  <th className="px-4 py-2">Type</th>
-                  <th className="px-4 py-2">Risk</th>
-                  <th className="px-4 py-2">Pattern</th>
-                  <th className="px-4 py-2"></th>
+                  <th className="px-4 py-2.5 font-medium whitespace-nowrap">Date</th>
+                  <th className="px-4 py-2.5 font-medium">From</th>
+                  <th className="px-4 py-2.5 font-medium">To</th>
+                  <th className="px-4 py-2.5 font-medium">Bank</th>
+                  <th className="px-4 py-2.5 font-medium text-right whitespace-nowrap">Amount</th>
+                  <th className="px-4 py-2.5 font-medium">Type</th>
+                  <th className="px-4 py-2.5 font-medium">Risk</th>
+                  <th className="px-4 py-2.5 font-medium">Pattern</th>
+                  <th className="px-4 py-2.5 font-medium text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -110,14 +117,14 @@ export function TransactionsView() {
                     className="border-t hover:bg-[var(--hover)] transition"
                     style={{ borderColor: "var(--border)", color: "var(--text)" }}
                   >
-                    <td className="px-4 py-2.5 font-mono text-[12px]">{t.date}</td>
+                    <td className="px-4 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">{t.date}</td>
                     <td className="px-4 py-2.5">{t.fromAccount}</td>
                     <td className="px-4 py-2.5">{t.toAccount}</td>
                     <td className="px-4 py-2.5">{t.bank}</td>
-                    <td className="px-4 py-2.5 text-right font-mono">
+                    <td className="px-4 py-2.5 text-right font-mono whitespace-nowrap tabular-nums">
                       {t.currency === "INR" ? formatINR(t.amount) : `${t.amount.toLocaleString("en-IN")} ${t.currency}`}
                     </td>
-                    <td className="px-4 py-2.5 text-[12px]" style={{ color: "var(--muted)" }}>
+                    <td className="px-4 py-2.5 text-[12px] whitespace-nowrap" style={{ color: "var(--muted)" }}>
                       {t.type}
                     </td>
                     <td className="px-4 py-2.5">
@@ -143,7 +150,7 @@ export function TransactionsView() {
                         onClick={() => {
                           if (confirm("Delete this transaction?")) deleteTx(t.id);
                         }}
-                        className="text-[11px] text-red-400/70 hover:text-red-300"
+                        className="rounded-md border border-transparent px-2 py-1 text-[11px] text-red-400/70 transition hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-300"
                       >
                         Delete
                       </button>
@@ -160,6 +167,6 @@ export function TransactionsView() {
           </div>
         )}
       </div>
-    </div>
+    </Page>
   );
 }

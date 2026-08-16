@@ -1,6 +1,7 @@
 "use client";
 
 import { useTheme } from "./ThemeProvider";
+import { PAGE_GUTTER } from "./ui/Page";
 import type { ViewKey } from "./AppShell";
 
 const VIEW_TITLES: Record<ViewKey, { title: string; sub: string }> = {
@@ -26,10 +27,13 @@ export function TopBar({
 
   return (
     <header
-      className="sticky top-0 z-20 border-b backdrop-blur"
+      className="shrink-0 z-20 border-b backdrop-blur"
       style={{ borderColor: "var(--border)", background: "var(--panel-strong)" }}
     >
-      <div className="flex items-center gap-4 px-5 py-3">
+      {/* Same max-width and gutters as <Page>, so the view title sits exactly
+          above the left edge of the cards it belongs to instead of floating
+          20-odd pixels off on a wide monitor. */}
+      <div className={`mx-auto w-full max-w-[1760px] ${PAGE_GUTTER} flex items-center gap-4 py-3`}>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
@@ -39,17 +43,17 @@ export function TopBar({
               SECURE
             </span>
           </div>
-          <div className="mt-0.5 text-lg font-semibold leading-tight" style={{ color: "var(--text-strong)" }}>
+          <div className="mt-0.5 text-lg font-semibold leading-tight truncate" style={{ color: "var(--text-strong)" }}>
             {title}
           </div>
-          <div className="text-[12px]" style={{ color: "var(--muted-2)" }}>{sub}</div>
+          <div className="text-[12px] truncate" style={{ color: "var(--muted-2)" }}>{sub}</div>
         </div>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex shrink-0 items-center gap-2.5">
           {/* Live feed toggle */}
           <button
             onClick={onToggleFeed}
-            className={`flex items-center gap-2 rounded-lg border px-3 py-2 transition ${
+            className={`flex h-9 items-center gap-2 whitespace-nowrap rounded-lg border px-3 transition ${
               liveFeed
                 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200 shadow-glow"
                 : "hover:bg-[var(--hover)]"
@@ -64,7 +68,7 @@ export function TopBar({
           <button
             onClick={toggle}
             title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="flex items-center gap-1.5 rounded-lg border px-3 py-2 transition hover:bg-[var(--hover)]"
+            className="flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border px-3 transition hover:bg-[var(--hover)]"
             style={{ borderColor: "var(--border)", background: "var(--chip)", color: "var(--text)" }}
           >
             {theme === "dark" ? (

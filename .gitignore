@@ -8,6 +8,9 @@ dist
 .DS_Store
 *.log
 
+# Local agent workspace, not part of the app.
+.claude/
+
 # Superseded copy of the whole app, kept locally only.
 new raisoni/
 tsconfig.tsbuildinfo
