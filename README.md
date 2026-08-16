@@ -1,57 +1,328 @@
-# FinGuard Intelligence
+<div align="center">
 
-AI-assisted console for **cross-bank financial crime detection**: import transaction
-CSVs, get automatic risk scoring and typology detection, explore the money flow as a
-network graph, question a multi-agent analyst, and generate a filing-ready SAR.
+# 🛡️ FinGuard Intelligence
 
-Built with Next.js 14 (App Router), TypeScript, Tailwind CSS, and Firebase
-(Auth + Firestore). Investigation answers are produced by a Groq-hosted model with a
-deterministic local fallback, so the app still works with no API key.
+### Cross-bank financial-crime detection, from a CSV to a filed SAR in one sitting.
 
-## Quick start
+[![Next.js](https://img.shields.io/badge/Next.js-14.2-000000?style=flat-square&logo=next.js)](https://nextjs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
+[![Firebase](https://img.shields.io/badge/Firebase-Auth%20%2B%20Firestore-FFCA28?style=flat-square&logo=firebase&logoColor=black)](https://firebase.google.com)
+[![Groq](https://img.shields.io/badge/Groq-Llama%203.3%2070B-F55036?style=flat-square)](https://groq.com)
+
+**Upload a transaction ledger. Get back a case file.**
+
+Risk-scored transactions · a network graph of the real money flow · a four-agent AI
+investigation grounded in *your* numbers · and a filing-ready Suspicious Activity Report.
+
+</div>
+
+---
+
+## Why this exists
+
+Money laundering does not hide inside one bank. It hides in the **seams between banks**.
+
+A ₹24 crore placement walks through six accounts at five different institutions in a
+single afternoon. HDFC sees one outgoing wire. ICICI sees one incoming wire. Axis sees a
+transfer that balances. Every bank's monitoring system looks at its own slice, finds
+nothing individually alarming, and stays quiet — while the complete shape, obvious the
+moment you draw it, is a textbook layering chain.
+
+FinGuard is the console that draws it. Point it at a consolidated ledger and it recovers
+the structure no single institution can see: who controls the money, which hops were
+engineered to dodge a reporting threshold, and which accounts a regulator will ask about
+first.
+
+## The 60-second tour
+
+| | | |
+|---|---|---|
+| **1** | **Import** | Drag a CSV in. Pre-flight preview validates headers and shows you the first rows before anything is written. |
+| **2** | **Triage** | Every row is severity-scored and tagged with a laundering typology on arrival. |
+| **3** | **See the shape** | The graph groups accounts into rings and labels each one — chain, funnel, fan-out — with its own total. |
+| **4** | **Interrogate** | Ask the four-agent panel anything. Answers quote your real account IDs and amounts. |
+| **5** | **File** | One click turns the evidence into a SAR narrative and prints a clean A4 document. |
+
+---
+
+## ✨ The six views
+
+### 1. 📊 Command Dashboard
+
+The morning-briefing screen. Six KPI tiles — total transactions, open alerts, flagged
+rings, flagged amount, severity score, confidence — all computed live from your own
+imports, never from a fixture.
+
+- **Severity × Date heatmap** — every transaction placed on a grid of day against risk
+  band, so a single afternoon of frantic activity shows up as a hot column you can't miss.
+- **Detected patterns** — the typology mix across the whole ledger, ranked by exposure.
+- **Alert feed** — grouped by day, newest first, each entry carrying its amount, its
+  severity and the accounts involved.
+- **Agent fleet** — the four specialists and their live status.
+
+### 2. 📒 Transactions
+
+The full ledger, searchable across accounts, banks and notes, filterable by severity.
+Every row carries its own pattern tag, so you can pull "show me only the mule deposits"
+out of ten thousand rows without writing a query.
+
+### 3. 🕸️ Transaction Graph
+
+The centrepiece. Accounts become nodes, transfers become directed edges, and connected
+components are laid out as **one tidy card per ring** — so ten separate laundering
+structures read as ten separate structures instead of one hairball.
+
+- Each card is titled with the ring's detected typology, its account count and its
+  rupee total.
+- Ring shapes are classified automatically: **chain** (A→B→C→D, layering),
+  **collector** (many→one, a mule hub), **distributor** (one→many, structuring),
+  **web**, **pair**.
+- Zoom, pan and a scrolling canvas that renders the graph at natural size.
+- **Edge log** below the canvas — every hop as a sortable row with a sticky header.
+- Click any node for a **slide-over dossier**: role in the ring, money in, money out,
+  the amount retained, counterparties, and a one-click **Escalate to SAR**.
+- The AI Investigator can drive this view — "View on graph" from any reply focuses
+  exactly the accounts that reply was about.
+
+### 4. 📥 Upload CSV
+
+- Drag-and-drop or file-picker import with a **pre-flight preview** — headers are
+  validated and the first rows displayed *before* a single document is written.
+- A downloadable template so the expected shape is never a guess.
+- **Upload history** tab: every past import is kept as its own record. Select one and
+  the entire dashboard replays that file's analytics in isolation — useful for
+  "what did last Tuesday's batch actually look like?"
+
+### 5. 🤖 AI Investigator
+
+A four-agent panel over your data, not over the internet's general knowledge of AML.
+
+| Agent | Answers the question |
+|---|---|
+| 🕸️ **Graph Analyst** | What does the money map look like? |
+| ⚠️ **Risk Analyst** | Why is that wrong, compared to normal activity? |
+| ⚖️ **Compliance Officer** | Which obligation does it trigger? |
+| 🔍 **Investigation Assistant** | What do I do about it on Monday morning? |
+
+**The part that matters:** before the model is called, the server computes an
+**evidence brief** locally — rings, hop paths, per-account in/out totals, threshold
+proximity, bank spread. The model receives that brief, so every answer quotes real
+account IDs, real amounts and real dates. Ask it a vague question and you still get
+`ACC-STR-HUB`, `₹47.80 L` and `2026-08-11` back, because the numbers were never the
+model's to invent.
+
+- **Two modes, auto-detected** — a short conversational reply for a question, the full
+  four-agent report for an investigation.
+- **Follow-ups keep context.** Run an investigation, then ask "which accounts should I
+  freeze first?" and the panel answers from what it just found.
+- One-tap **suggested follow-ups** after every reply.
+- **Works with no API key.** If `GROQ_API_KEY` is absent, rate-limited or the response
+  is malformed, the same evidence brief is rendered by a deterministic offline engine.
+  The app never shows an empty screen; it degrades to a slightly plainer report.
+
+### 6. ⚖️ Compliance / SAR
+
+Generates a Suspicious Activity Report narrative from the same evidence engine that
+powers the chat — subject accounts, the typology, the pattern of activity, the amounts,
+the dates, and a conclusion. Reports are stored per user with a status, deduplicated so
+escalating the same account twice doesn't create a second filing, and exported through a
+**print-only portal** that lays out a clean A4 document with none of the app chrome.
+
+---
+
+## 🔬 The detection engine
+
+Everything above is driven by `src/lib/investigation.ts` — a pure TypeScript pass over
+your rows. No model is consulted to decide what is suspicious; the model only explains
+what the engine already found. That is deliberate: findings must be reproducible, and a
+number in a SAR has to be defensible.
+
+### Seven detectors
+
+| Code | Fires when | Why it matters |
+|---|---|---|
+| `CHAIN-DECAY` | The longest money path runs 3+ linked hops, with each hop's amount ≤ the one before | Classic **layering** — a trail stretched over accounts and banks to break the link to the source. A shrinking balance means every hop kept a cut |
+| `THRESHOLD-HUG` | 3+ transfers land between **₹8.50 L and ₹9,99,999** | Nobody accidentally stops just short of the ₹10 L reporting line, repeatedly |
+| `FUNNEL-IN` | A collector hub takes payments from 3+ unrelated accounts, then forwards the pile | The shape of a **mule network**. Tightly-clustered deposit sizes mean coordination, not coincidence |
+| `FAN-OUT` | One account splits a sum across 3+ receivers | **Structuring** — one reportable payment broken into several that aren't |
+| `BANK-HOP` | A ring spans 3+ institutions and contains a pass-through account | The cross-bank blind spot itself: no single bank holds enough of the trail to flag it |
+| `BURST` | 5+ transfers on the single busiest day | Genuine activity spreads out. A burst means someone is moving funds before review |
+| `CROSS-BORDER` | Value leaves on a foreign rail (SWIFT, remittance, outward wire) | Once money is outside Indian jurisdiction, recovery is close to impossible |
+
+Findings are ranked by severity and exposure, and each one carries a plain-language
+explanation, the accounts involved, the amount and the dates — that same text feeds the
+chat, the alert feed and the SAR.
+
+### Six typologies
+
+Tagged per transaction from the note text, and rolled up per ring:
+
+🔴 **Rapid Layering** · 🟠 **Shell-Account Funnel** · 🟣 **Mule Network** ·
+🔵 **Structuring / Smurfing** · 🟢 **Round-Trip / U-Turn** · 🩷 **Offshore Transfer**
+
+### How risk is scored
+
+| Severity | Rule |
+|---|---|
+| 🔴 **High** | The note names a laundering pattern (layering, structuring, mule, shell, offshore, split, pass-through) **or** the amount is ≥ **₹10,00,000** |
+| 🟡 **Medium** | Amount ≥ **₹1,00,000** |
+| 🟢 **Safe** | Everything else |
+
+Reporting thresholds are configurable in one place — `REPORT_THRESHOLD` (₹10 L) and
+`WIRE_REPORT_THRESHOLD` (₹5 L) at the top of `src/lib/investigation.ts`.
+
+---
+
+## 🚀 Quick start
 
 ```bash
+git clone https://github.com/KUNAL2007-maker/FinGuard.git
+cd FinGuard
 npm install
-cp .env.example .env.local   # then fill in the values
+cp .env.example .env.local    # fill in your own values
 npm run dev
 ```
 
-Then open http://localhost:3000 and create an account.
+Open <http://localhost:3000>, create an account, and upload
+[`samples/guided-demo.csv`](samples/guided-demo.csv).
 
 ### Environment
 
-| Variable | Purpose |
-| --- | --- |
-| `NEXT_PUBLIC_FIREBASE_*` | Firebase web config for your own project (Auth + Firestore enabled) |
-| `GROQ_API_KEY` | Optional. Without it, investigations use the built-in offline engine |
+| Variable | Required | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_FIREBASE_API_KEY` | ✅ | Firebase web config for your own project |
+| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | ✅ | |
+| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | ✅ | |
+| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | ✅ | |
+| `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | ✅ | |
+| `NEXT_PUBLIC_FIREBASE_APP_ID` | ✅ | |
+| `NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID` | — | Analytics only |
+| `GROQ_API_KEY` | — | **Optional.** Without it, investigations run on the offline engine |
 
-`.env.local` is gitignored. Nothing in this repo carries a live project config.
+In the Firebase console, enable **Email/Password** authentication and create a
+**Firestore** database. `.env.local` is gitignored; nothing in this repository carries a
+live project config.
 
-## Views
+### CSV format
 
-1. **Command Dashboard** — KPI cards, hour × severity risk heatmap, agent fleet
-   status, a scrolling alert feed grouped by day, and typology distribution.
-2. **Transactions** — Searchable, severity-filtered ledger with per-row pattern tags.
-3. **Transaction Graph** — SVG network canvas laid out as per-typology cluster cards,
-   with zoom, focus-from-chat, an edge log, and a slide-over dossier per account.
-4. **Upload CSV** — Drag-and-drop import with a pre-flight preview, plus a history
-   tab that replays the analytics of any earlier upload or day.
-5. **AI Investigator** — Natural-language chat over your own data. Findings are
-   grounded in a locally computed evidence brief, with a jump-to-graph action.
-6. **Compliance / SAR** — Generates a SAR narrative from that same evidence and
-   exports a clean A4 document via a print-only portal.
+```csv
+date,from,to,bank,amount,currency,type,note
+2026-08-10,ACC-LAY-01,ACC-LAY-02,HDFC Bank,24000000,INR,RTGS,rapid layering hop 1
+```
 
-## Structure
+`date`, `from`, `to` and `amount` are required. `bank`, `currency`, `type` and `note` are
+optional but make the analysis much sharper — `note` is what drives typology tagging and
+`type` is what distinguishes a domestic rail from an outward wire.
+
+### 📁 Sample datasets
+
+| File | Rows | What it demonstrates |
+|---|---|---|
+| [`samples/guided-demo.csv`](samples/guided-demo.csv) | 30 | **Start here.** Exactly 4 high-risk rings (layering chain, structuring fan-out, mule funnel, offshore SWIFT exit), 2 medium and 4 clean groups — every severity band and every panel populated |
+| [`samples/typology-sweep.csv`](samples/typology-sweep.csv) | 36 | All six typologies including a shell-company funnel, spread over 7 banks |
+| [`samples/high-volume.csv`](samples/high-volume.csv) | 96 | A denser ledger for testing the graph, filters and pagination at size |
+
+---
+
+## 🏗️ Architecture
 
 ```
 src/
-  app/                 App Router (layout, page, login, api/chat)
-  components/          AppShell, Sidebar, TopBar, NodeDetailDrawer, views/*, ui/*
-  lib/firebase.ts      Firebase client init from env
-  lib/hooks.ts         Firestore reads/writes, CSV bulk insert, upload history
-  lib/investigation.ts Evidence engine: pattern detectors, per-account stats, SAR text
-  lib/mockData.ts      Types, formatters, risk classification, pattern taxonomy
+├── app/
+│   ├── layout.tsx            Root layout, theme + auth providers
+│   ├── page.tsx              Single-page shell, view routing
+│   ├── login/page.tsx        Sign-in / registration
+│   ├── globals.css           Design tokens + the print-only SAR stylesheet
+│   └── api/chat/route.ts     Investigation endpoint — grounding, Groq call, fallback
+├── components/
+│   ├── AppShell.tsx          Sidebar + top bar + scroll model
+│   ├── AuthProvider.tsx      Firebase auth context
+│   ├── NodeDetailDrawer.tsx  Per-account dossier, Escalate to SAR
+│   ├── views/                The six screens
+│   └── ui/                   MetricCard, Page, SeverityBadge, Sparkline
+└── lib/
+    ├── firebase.ts           Client init from env
+    ├── domain.ts             Types, risk scoring, typology taxonomy, clustering, layout
+    ├── investigation.ts      Evidence engine — 7 detectors, ring analysis, SAR text
+    └── hooks.ts              Firestore reads/writes, CSV bulk insert, upload history
 ```
 
-Per-user data lives under `users/{uid}/{transactions,alerts,sar_reports,uploads}`,
-so accounts never see each other's imports.
+**Data model.** Everything is namespaced per user:
+
+```
+users/{uid}/transactions   users/{uid}/alerts
+users/{uid}/sar_reports    users/{uid}/uploads
+```
+
+No account can read another's imports. Suggested Firestore rules:
+
+```js
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
+```
+
+**Where the intelligence lives.** The analysis layer is deliberately server-side and
+model-free. `investigation.ts` (~1,250 lines) does the detection; `route.ts` decides
+whether a message is a question or an investigation, builds the brief, calls Groq with a
+retry/back-off that recognises daily rate caps, and falls back to the local report
+generator on any failure. The UI never talks to Groq directly and the API key never
+reaches the browser.
+
+---
+
+## ☁️ Deploy
+
+The app is a stock Next.js App Router project and deploys to Vercel with no
+configuration:
+
+1. **Import** the repository at [vercel.com/new](https://vercel.com/new).
+2. Add the environment variables from the table above under
+   **Settings → Environment Variables** (all seven `NEXT_PUBLIC_FIREBASE_*`, plus
+   `GROQ_API_KEY` if you have one). `NEXT_PUBLIC_*` values must be present at build time.
+3. In the Firebase console, add your Vercel domain under
+   **Authentication → Settings → Authorized domains**, or sign-in will be rejected in
+   production.
+4. Deploy. Every push to `main` ships automatically.
+
+```bash
+npm run build    # verify the production build locally first
+```
+
+---
+
+## 🧰 Tech stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| Framework | **Next.js 14** (App Router) | Server routes keep the API key and the analysis off the client |
+| Language | **TypeScript** (strict) | The evidence engine is the product; it needs types |
+| Styling | **Tailwind CSS** + CSS custom properties | One token set drives dark, light and print |
+| Auth & data | **Firebase** Auth + Firestore | Per-user isolation with no backend to run |
+| Inference | **Groq** · Llama 3.3 70B | Fast enough that a four-agent panel answers in seconds |
+| Visualisation | **Hand-rolled SVG** | No chart library — the graph layout is bespoke, so the cluster cards can be too |
+
+**Zero runtime dependencies beyond the framework.** `package.json` lists four production
+packages: `next`, `react`, `react-dom`, `firebase`. No chart library, no UI kit, no state
+manager. Every widget in the console — the heatmap, the sparklines, the network canvas,
+the print layout — is written for this app.
+
+---
+
+## ⚠️ Scope
+
+FinGuard is a decision-support console built as a final-year engineering project. It
+surfaces patterns and drafts narratives; it does not file reports with any regulator, and
+its output is a starting point for a human investigator, not a legal determination.
+
+<div align="center">
+
+**Built with Next.js, Firebase and Groq.**
+
+</div>
