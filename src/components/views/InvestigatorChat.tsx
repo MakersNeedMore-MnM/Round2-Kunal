@@ -8,7 +8,7 @@ import {
   type ChatAgent,
   type ChatAgentPanel,
   type ChatMessage,
-} from "@/lib/mockData";
+} from "@/lib/domain";
 import { useTransactions } from "@/lib/hooks";
 import { Page } from "../ui/Page";
 
@@ -78,10 +78,18 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
           message: text,
           mode: forcedMode,
           context,
+          // Only system/user/assistant are legal roles. A finished report is
+          // stored locally as role "report", and passing that through verbatim
+          // made Groq reject the entire request with "discriminator property
+          // 'role' has invalid value" — which is why every follow-up asked
+          // after an investigation came back as "AI service unavailable".
           history: messages
             .filter((m) => m.role !== "system")
             .slice(-8)
-            .map((m) => ({ role: m.role === "agent" ? "assistant" : m.role, content: m.content })),
+            .map((m) => ({
+              role: m.role === "user" ? "user" : "assistant",
+              content: historyText(m),
+            })),
         }),
       });
 
@@ -356,6 +364,20 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
 
 function nowLabel() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// What an earlier bubble contributes to the next turn. A report's own `content`
+// is only its headline, so the verdict points and named accounts travel with it —
+// otherwise a follow-up like "which accounts should I freeze first?" is answered
+// by a model that cannot see what the investigation just found.
+function historyText(m: ChatMessage): string {
+  const base = m.content ?? "";
+  if (m.role !== "report" || !m.verdict) return base;
+  const points = (m.verdict.points ?? []).slice(0, 4).map((p) => `• ${p}`).join("\n");
+  const accounts = (m.verdict.accounts ?? []).slice(0, 10).join(", ");
+  return [base, points, accounts && `Accounts implicated: ${accounts}`]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function ContextRow({ k, v, mono }: { k: string; v: string; mono?: boolean }) {

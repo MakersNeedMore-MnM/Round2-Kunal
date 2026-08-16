@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useTransactions, useDeleteTransaction } from "@/lib/hooks";
-import { formatINR, detectPattern, type Severity } from "@/lib/mockData";
+import { formatINR, detectPattern, type Severity } from "@/lib/domain";
 import { SeverityBadge } from "../ui/SeverityBadge";
 import { Page } from "../ui/Page";
 

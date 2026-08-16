@@ -10,7 +10,7 @@ import {
   clearSARReports,
   deleteSAR,
 } from "@/lib/hooks";
-import { formatINR, type Severity, type Transaction } from "@/lib/mockData";
+import { formatINR, type Severity, type Transaction } from "@/lib/domain";
 import { buildEvidence, sarNarrative, type SARNarrative } from "@/lib/investigation";
 import { SeverityBadge } from "../ui/SeverityBadge";
 import { Page } from "../ui/Page";

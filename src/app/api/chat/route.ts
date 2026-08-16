@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildEvidence, evidenceBrief, localReport, type Evidence } from "@/lib/investigation";
-import { formatINR, type Severity, type Transaction } from "@/lib/mockData";
+import { formatINR, type Severity, type Transaction } from "@/lib/domain";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -127,8 +127,25 @@ function wantsInvestigation(msg: string): boolean {
   return keywords.some((k) => m.includes(k));
 }
 
-export async function POST(req: Request) {
-  try {
+// The chat API only accepts system/user/assistant. The client keeps richer
+// roles for its own bubbles ("report", "agent"), and one of those reaching the
+// model returned HTTP 400 for the whole turn, so the answer arrived as "AI
+// service unavailable". Anything that isn't a user turn is folded into
+// assistant, and entries without usable text are dropped rather than sent.
+function sanitizeHistory(history: unknown) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .slice(-6)
+    .map((m) => {
+      const role = (m as { role?: unknown })?.role;
+      const content = (m as { content?: unknown })?.content;
+      if (typeof content !== "string" || !content.trim()) return null;
+      return { role: role === "user" ? "user" : "assistant", content };
+    })
+    .filter((m): m is { role: string; content: string } => m !== null);
+}
+
+export async function POST(req: Request) {  try {
     const { message, history, context, mode: forcedMode } = await req.json();
 
     if (!message || typeof message !== "string") {
@@ -174,10 +191,7 @@ export async function POST(req: Request) {
 
     const messages = [
       { role: "system", content: investigate ? INVESTIGATE_PROMPT : CASUAL_PROMPT },
-      ...(history ?? []).slice(-6).map((m: { role: string; content: string }) => ({
-        role: m.role === "agent" ? "assistant" : m.role,
-        content: m.content,
-      })),
+      ...sanitizeHistory(history),
       { role: "user", content: `${message}\n\n=== EVIDENCE BRIEF (computed from the user's real data) ===\n${brief}` },
     ];
 

@@ -9,7 +9,7 @@ import {
   type GraphEdge,
   type GraphNode,
   type Typology,
-} from "@/lib/mockData";
+} from "@/lib/domain";
 import { createSAR, useSARReports } from "@/lib/hooks";
 import { useAuth } from "@/components/AuthProvider";
 import { SeverityBadge } from "./ui/SeverityBadge";
@@ -169,19 +169,38 @@ export function NodeDetailDrawer({
     <>
       <div
         onClick={onClose}
-        className={`fixed inset-0 z-40 bg-black/50 backdrop-blur-sm transition-opacity ${
+        className={`fixed inset-0 z-40 !mt-0 bg-black/50 backdrop-blur-sm transition-opacity ${
           open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
         }`}
       />
+      {/* !mt-0 is load-bearing, not tidying. The drawer is mounted inside the
+          page frame, which spaces its children with `space-y-4` — and that rule
+          puts `margin-top: 1rem` on every child after the first, fixed overlays
+          included. A fixed element with top-0 and a 16px top margin starts 16px
+          down, so its bottom 16px sat under the window edge: that is where the
+          Escalate button was disappearing. */}
       <aside
-        className={`fixed top-0 right-0 z-50 h-full w-[460px] max-w-full transition-transform duration-300 ${
+        className={`fixed right-0 top-0 z-50 !mt-0 h-[100dvh] w-[460px] max-w-full transition-transform duration-300 ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <div className="h-full flex flex-col border-l" style={{ background: "var(--panel)", borderColor: "var(--border)" }}>
+        {/* 100dvh, not h-full: `height: 100%` on a fixed element resolves against
+            the large viewport, which on a laptop with browser chrome or a tablet
+            with a collapsing toolbar is taller than what you can actually see —
+            that is how the Escalate button ended up under the bottom edge. dvh
+            tracks the visible box. min-h-0 on the column and shrink-0 on the two
+            chrome blocks then guarantee the scroll region gives up the space
+            rather than pushing the footer out. */}
+        <div
+          className="flex h-full min-h-0 flex-col border-l"
+          style={{ background: "var(--panel)", borderColor: "var(--border)" }}
+        >
           {node && (
             <>
-              <div className="p-5 border-b" style={{ borderColor: "var(--border)" }}>
+              <div
+                className="shrink-0 border-b p-5 [@media(max-height:820px)]:p-4"
+                style={{ borderColor: "var(--border)" }}
+              >
                 <div className="flex items-start gap-3">
                   <div
                     className="w-10 h-10 rounded-lg grid place-items-center"
@@ -227,14 +246,14 @@ export function NodeDetailDrawer({
                     ×
                   </button>
                 </div>
-                <div className="mt-4 grid grid-cols-3 gap-2">
+                <div className="mt-4 grid grid-cols-3 gap-2 [@media(max-height:820px)]:mt-3">
                   <MiniStat label="Role in ring" value={roleOf(flow)} color="#a78bfa" />
                   <MiniStat label={`Received (${flow.inCount})`} value={formatINR(flow.inAmount)} color="#38bdf8" />
                   <MiniStat label={`Sent (${flow.outCount})`} value={formatINR(flow.outAmount)} color="#f59e0b" />
                 </div>
               </div>
 
-              <div className="p-5 overflow-auto space-y-5 flex-1">
+              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-5 [@media(max-height:820px)]:p-4">
                 {read && (
                   <section>
                     <div className="flex items-center justify-between gap-2">
@@ -367,7 +386,13 @@ export function NodeDetailDrawer({
                 </section>
               </div>
 
-              <div className="p-4 border-t" style={{ borderColor: "var(--border)" }}>
+              {/* Pinned action bar. Solid panel fill rather than the drawer's own
+                  background so the list visibly runs underneath it, and the
+                  bottom inset keeps the button clear of the window edge. */}
+              <div
+                className="shrink-0 border-t p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+                style={{ borderColor: "var(--border)", background: "var(--panel-strong)" }}
+              >
                 {existing ? (
                   <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[12.5px] text-emerald-200">

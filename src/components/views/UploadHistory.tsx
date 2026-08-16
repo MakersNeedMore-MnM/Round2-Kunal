@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { deleteUpload, useTransactions, useUploadHistory, type UploadRecord } from "@/lib/hooks";
 import { buildEvidence, type Evidence } from "@/lib/investigation";
-import { formatINR, severityColor } from "@/lib/mockData";
+import { formatINR, severityColor } from "@/lib/domain";
 
 // A past import can be replayed either on its own or together with everything
 // else that landed the same day, so the panel is driven by one of two keys.

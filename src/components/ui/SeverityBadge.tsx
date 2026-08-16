@@ -1,4 +1,4 @@
-import type { Severity } from "@/lib/mockData";
+import type { Severity } from "@/lib/domain";
 
 export function SeverityBadge({
   severity,

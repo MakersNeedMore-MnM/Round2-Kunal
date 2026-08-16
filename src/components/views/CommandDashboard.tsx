@@ -4,8 +4,8 @@ import { useMemo, useState } from "react";
 import { MetricCard } from "../ui/MetricCard";
 import { SeverityBadge } from "../ui/SeverityBadge";
 import { Page, PanelHeader } from "../ui/Page";
-import { formatINR, detectPattern } from "@/lib/mockData";
-import type { Transaction } from "@/lib/mockData";
+import { formatINR, detectPattern } from "@/lib/domain";
+import type { Transaction } from "@/lib/domain";
 import { useDashboardStats, useAlerts, useTransactions } from "@/lib/hooks";
 
 const spark1 = [12, 14, 13, 18, 17, 22, 24, 21, 27, 30, 28, 34];

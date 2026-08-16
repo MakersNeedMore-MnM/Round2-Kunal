@@ -10,7 +10,7 @@ import {
   type GraphCluster,
   type GraphEdge,
   type GraphNode,
-} from "@/lib/mockData";
+} from "@/lib/domain";
 import { useTransactions } from "@/lib/hooks";
 import { SeverityBadge } from "../ui/SeverityBadge";
 import { NodeDetailDrawer } from "../NodeDetailDrawer";
@@ -123,6 +123,11 @@ export function GraphView({
 
   const highCount = NODES.filter((n) => n.severity === "high").length;
   const medCount = NODES.filter((n) => n.severity === "medium").length;
+
+  // The multi-account rings — the typology panel's list, the "Rings" stat and
+  // its empty state all read this, and computing it three times from CLUSTERS
+  // was how the stat and the list could disagree.
+  const webClusters = useMemo(() => CLUSTERS.filter((c) => c.kind === "web"), [CLUSTERS]);
 
   if (loading) {
     return (
@@ -536,21 +541,25 @@ export function GraphView({
       </div>
 
       {/* ── Reference panels ───────────────────────────────────────────────
-          Equal-height columns, one subject each. Lists are capped by row count
-          rather than pixel height so nothing hides behind a nested scrollbar. */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
+          Three equal columns, one subject each, and the row height is FIXED
+          rather than set by whichever list happens to be longest. With ten
+          rings the typology column ran to ~600px and stretched the other two
+          into half a screen of dead space; now each list scrolls inside its own
+          body and the header carries the count so a clipped list still says how
+          long it is. */}
+      <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-3">
         <Panel title="Cluster inspector">
-          <div className="grid grid-cols-4 gap-2 text-center">
+          <div className="grid shrink-0 grid-cols-4 gap-2 text-center">
             <Stat label="Nodes" value={String(NODES.length)} color="#38bdf8" />
             <Stat label="Edges" value={String(EDGES.length)} color="#a78bfa" />
-            <Stat label="Rings" value={String(CLUSTERS.filter((c) => c.kind === "web").length)} color="#f59e0b" />
+            <Stat label="Rings" value={String(webClusters.length)} color="#f59e0b" />
             <Stat label="High" value={String(highCount)} color="#ef4444" />
           </div>
-          <div className="h-px my-4" style={{ background: "var(--border)" }} />
-          <div className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
+          <div className="h-px my-4 shrink-0" style={{ background: "var(--border)" }} />
+          <div className="shrink-0 text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
             Institutions ({displayBanks.length})
           </div>
-          <div className="mt-2.5 space-y-2">
+          <div className="mt-2.5 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {displayBanks.map((b) => (
               <div key={b.id} className="flex items-center gap-2">
                 <span
@@ -568,9 +577,9 @@ export function GraphView({
           </div>
         </Panel>
 
-        <Panel title="Detected typologies">
-          <div className="space-y-1.5">
-            {CLUSTERS.filter((c) => c.kind === "web").map((c) => (
+        <Panel title="Detected typologies" count={webClusters.length}>
+          <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+            {webClusters.map((c) => (
               <div
                 key={c.id}
                 className="flex items-center gap-2.5 rounded-lg border px-2.5 py-2"
@@ -593,7 +602,7 @@ export function GraphView({
                 </span>
               </div>
             ))}
-            {CLUSTERS.filter((c) => c.kind === "web").length === 0 && (
+            {webClusters.length === 0 && (
               <div className="text-[12px]" style={{ color: "var(--muted)" }}>
                 No multi-account rings in this dataset.
               </div>
@@ -601,8 +610,8 @@ export function GraphView({
           </div>
         </Panel>
 
-        <Panel title="Largest hops">
-          <div className="space-y-1.5">
+        <Panel title="Largest hops" count={Math.min(EDGES.length, 8)}>
+          <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
             {EDGES.slice()
               .sort((a, b) => b.amount - a.amount)
               .slice(0, 8)
@@ -734,16 +743,37 @@ function curvePath(x1: number, y1: number, x2: number, y2: number) {
 // Shared shell for the three reference columns. Having one component own the
 // padding, radius and header means the columns cannot drift apart visually the
 // way they had when each was hand-rolled.
-function Panel({ title, children }: { title: string; children: ReactNode }) {
+//
+// The height cap is the important part: the row is a fixed band on a desktop, so
+// the column with the most rows scrolls instead of dictating how tall its two
+// neighbours have to be. Children are laid out as a flex column, so whichever
+// child carries `flex-1 min-h-0 overflow-y-auto` becomes the scrolling region.
+// No cap under lg — stacked on a narrow screen there is nothing to keep level.
+function Panel({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: number;
+  children: ReactNode;
+}) {
   return (
     <section
-      className="flex h-full flex-col rounded-2xl border p-4"
+      className="flex h-full min-h-0 flex-col rounded-2xl border p-4 lg:max-h-[392px]"
       style={{ background: "var(--panel)", borderColor: "var(--border)" }}
     >
-      <h3 className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
-        {title}
-      </h3>
-      <div className="mt-3">{children}</div>
+      <div className="flex shrink-0 items-baseline justify-between gap-2">
+        <h3 className="text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
+          {title}
+        </h3>
+        {count !== undefined && (
+          <span className="font-mono text-[11px] tabular-nums" style={{ color: "var(--muted-2)" }}>
+            {count}
+          </span>
+        )}
+      </div>
+      <div className="mt-3 flex min-h-0 flex-1 flex-col">{children}</div>
     </section>
   );
 }

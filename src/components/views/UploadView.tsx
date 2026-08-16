@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { bulkInsertTransactions, clearAllData, useUploadHistory, type ParsedRow } from "@/lib/hooks";
-import { classifyRisk, severityColor } from "@/lib/mockData";
+import { classifyRisk, severityColor } from "@/lib/domain";
 import { UploadHistory } from "./UploadHistory";
 import { Page } from "../ui/Page";
 
