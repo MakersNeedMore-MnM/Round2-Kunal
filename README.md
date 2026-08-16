@@ -38,7 +38,7 @@ first.
 
 | | | |
 |---|---|---|
-| **1** | **Import** | Drag a CSV in. or choose a file from the sample.csv for reference.Pre-flight preview validates headers and shows you the first rows before anything is written. |
+| **1** | **Import** | Drag a .csv file in or choose a file from the sample.csv for reference. Pre-flight preview validates headers and shows you the first rows before anything is written. |
 | **2** | **Triage** | Every row is severity-scored and tagged with a laundering typology on arrival. |
 | **3** | **See the shape** | The graph groups accounts into rings and labels each one — chain, funnel, fan-out — with its own total. |
 | **4** | **Interrogate** | Ask the four-agent panel anything. Answers quote your real account IDs and amounts. |
