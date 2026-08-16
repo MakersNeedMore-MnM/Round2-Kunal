@@ -87,7 +87,7 @@ structures read as ten separate structures instead of one hairball.
 
 ### 4. 📥 Upload CSV
 
-- Drag-and-drop or file-picker import with a **pre-flight preview** — headers are
+- Drag-and-drop or pick a file from the sample.csv and import with a **pre-flight preview** — headers are
   validated and the first rows displayed *before* a single document is written.
 - A downloadable template so the expected shape is never a guess.
 - **Upload history** tab: every past import is kept as its own record. Select one and
@@ -186,23 +186,6 @@ npm run dev
 
 Open <http://localhost:3000>, create an account, and upload
 [`samples/guided-demo.csv`](samples/guided-demo.csv).
-
-### Environment
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `NEXT_PUBLIC_FIREBASE_API_KEY` | ✅ | Firebase web config for your own project |
-| `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | ✅ | |
-| `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | ✅ | |
-| `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | ✅ | |
-| `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | ✅ | |
-| `NEXT_PUBLIC_FIREBASE_APP_ID` | ✅ | |
-| `NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID` | — | Analytics only |
-| `GROQ_API_KEY` | — | **Optional.** Without it, investigations run on the offline engine |
-
-In the Firebase console, enable **Email/Password** authentication and create a
-**Firestore** database. `.env.local` is gitignored; nothing in this repository carries a
-live project config.
 
 ### CSV format
 
