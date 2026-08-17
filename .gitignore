@@ -14,4 +14,8 @@ dist
 
 # Superseded copy of the whole app, kept locally only.
 new raisoni/
+
+# Report, deck, video and the screenshots they are built from — large binaries
+# that are outputs of the project, not source.
+deliverables/
 tsconfig.tsbuildinfo

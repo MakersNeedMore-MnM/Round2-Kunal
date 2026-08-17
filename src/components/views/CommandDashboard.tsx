@@ -61,9 +61,9 @@ export function CommandDashboard({ liveFeed }: { liveFeed: boolean }) {
           trend={{ dir: "up", text: `${high} high-risk txns` }}
         />
         <MetricCard
-          label="Flagged Rings"
+          label="High-Risk Transfers"
           value={String(high)}
-          sub="High-risk transactions"
+          sub="Flagged for review"
           accent="#ef4444"
           spark={spark3}
           icon={<span className="text-[11px]">◉</span>}
