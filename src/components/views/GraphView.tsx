@@ -270,7 +270,11 @@ export function GraphView({
           </div>
         </div>
 
-        <div className="relative" style={{ height: viewportH, background: "var(--bg)" }}>
+        {/* viewportH has a 520px floor, which on a phone is most of the screen —
+            the toolbar above and the analysis panels below would both be pushed
+            out of reach. Capping at 60vh below lg keeps the canvas usable without
+            swallowing the page; lg:max-h-none restores the exact desktop height. */}
+        <div className="relative max-h-[60vh] lg:max-h-none" style={{ height: viewportH, background: "var(--bg)" }}>
           <div ref={scrollRef} className="absolute inset-0 overflow-auto">
             <svg
               width={Math.round(W * zoom)}

@@ -247,10 +247,10 @@ export function UploadView({ onDone }: { onDone: () => void }) {
       // the drop zone and the six-column preview do not stretch across an
       // ultrawide monitor. The history tab keeps the full page width.
       <div
-        className="max-w-5xl rounded-2xl p-6 border"
+        className="max-w-5xl rounded-2xl p-4 sm:p-6 border"
         style={{ background: "var(--panel)", borderColor: "var(--border)" }}
       >
-        <div className="flex items-start justify-between gap-3 mb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
           <div>
             <div className="text-lg font-semibold" style={{ color: "var(--text-strong)" }}>
               Import transactions from CSV
@@ -283,7 +283,7 @@ export function UploadView({ onDone }: { onDone: () => void }) {
           onDrop={onDrop}
           onDragOver={(e) => e.preventDefault()}
           onClick={() => inputRef.current?.click()}
-          className="rounded-xl border-2 border-dashed p-10 cursor-pointer hover:border-emerald-500/50 transition text-center"
+          className="rounded-xl border-2 border-dashed p-6 sm:p-10 cursor-pointer hover:border-emerald-500/50 transition text-center"
           style={{ borderColor: "var(--border)" }}
         >
           <input
@@ -316,7 +316,7 @@ export function UploadView({ onDone }: { onDone: () => void }) {
 
         {rows.length > 0 && status !== "success" && (
           <>
-            <div className="mt-5 flex items-center justify-between">
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
               <div className="text-[13px]" style={{ color: "var(--text)" }}>
                 <span className="font-semibold">{rows.length}</span> rows ready to upload
                 {highRisk > 0 && (
@@ -335,39 +335,47 @@ export function UploadView({ onDone }: { onDone: () => void }) {
             </div>
 
             <div className="mt-3 rounded-lg border overflow-hidden" style={{ borderColor: "var(--border)" }}>
-              <div className="grid grid-cols-6 text-[11px] uppercase tracking-widest px-3 py-2 border-b" style={{ background: "var(--chip)", borderColor: "var(--border)", color: "var(--muted)" }}>
-                <div>Date</div>
-                <div>From</div>
-                <div>To</div>
-                <div>Bank</div>
-                <div className="text-right">Amount</div>
-                <div className="text-right">Risk</div>
-              </div>
-              {preview.map((r) => {
-                const sev = classifyRisk(r.amount, r.note);
-                return (
-                  <div key={r._row} className="grid grid-cols-6 text-[12.5px] px-3 py-2 border-b" style={{ borderColor: "var(--border)", color: "var(--text)" }}>
-                    <div className="truncate">{r.date}</div>
-                    <div className="truncate">{r.fromAccount}</div>
-                    <div className="truncate">{r.toAccount}</div>
-                    <div className="truncate">{r.bank}</div>
-                    <div className="text-right font-mono tabular-nums">{r.amount.toLocaleString("en-IN")} {r.currency}</div>
-                    <div className="text-right">
-                      <span
-                        className="inline-block rounded px-1.5 py-0.5 text-[10.5px] font-medium capitalize"
-                        style={{ background: `${severityColor(sev)}22`, color: severityColor(sev) }}
-                      >
-                        {sev}
-                      </span>
-                    </div>
+              {/* Six equal columns can't fit a phone — every cell would truncate to
+                  three characters. Below lg the table keeps its natural width and
+                  scrolls sideways instead; at lg and up min-w-0 releases it and the
+                  grid fills the card exactly as before. */}
+              <div className="overflow-x-auto lg:overflow-x-visible">
+                <div className="min-w-[680px] lg:min-w-0">
+                  <div className="grid grid-cols-6 text-[11px] uppercase tracking-widest px-3 py-2 border-b" style={{ background: "var(--chip)", borderColor: "var(--border)", color: "var(--muted)" }}>
+                    <div>Date</div>
+                    <div>From</div>
+                    <div>To</div>
+                    <div>Bank</div>
+                    <div className="text-right">Amount</div>
+                    <div className="text-right">Risk</div>
                   </div>
-                );
-              })}
-              {rows.length > preview.length && (
-                <div className="px-3 py-2 text-[11px] text-center" style={{ color: "var(--muted)" }}>
-                  ...and {rows.length - preview.length} more rows
+                  {preview.map((r) => {
+                    const sev = classifyRisk(r.amount, r.note);
+                    return (
+                      <div key={r._row} className="grid grid-cols-6 text-[12.5px] px-3 py-2 border-b" style={{ borderColor: "var(--border)", color: "var(--text)" }}>
+                        <div className="truncate">{r.date}</div>
+                        <div className="truncate">{r.fromAccount}</div>
+                        <div className="truncate">{r.toAccount}</div>
+                        <div className="truncate">{r.bank}</div>
+                        <div className="text-right font-mono tabular-nums">{r.amount.toLocaleString("en-IN")} {r.currency}</div>
+                        <div className="text-right">
+                          <span
+                            className="inline-block rounded px-1.5 py-0.5 text-[10.5px] font-medium capitalize"
+                            style={{ background: `${severityColor(sev)}22`, color: severityColor(sev) }}
+                          >
+                            {sev}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {rows.length > preview.length && (
+                    <div className="px-3 py-2 text-[11px] text-center" style={{ color: "var(--muted)" }}>
+                      ...and {rows.length - preview.length} more rows
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </>
         )}
@@ -413,7 +421,7 @@ export function UploadView({ onDone }: { onDone: () => void }) {
           </div>
         )}
 
-        <div className="mt-6 pt-5 border-t flex items-center justify-between" style={{ borderColor: "var(--border)" }}>
+        <div className="mt-6 pt-5 border-t flex flex-wrap items-center justify-between gap-2" style={{ borderColor: "var(--border)" }}>
           <div className="text-[12px]" style={{ color: "var(--muted-2)" }}>
             Data is stored securely in your Firebase account
           </div>

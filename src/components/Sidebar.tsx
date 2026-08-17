@@ -75,15 +75,34 @@ const NAV: { key: ViewKey; label: string; hint: string; icon: React.ReactNode }[
   },
 ];
 
-export function Sidebar({ view, onChange }: { view: ViewKey; onChange: (v: ViewKey) => void }) {
+export function Sidebar({
+  view,
+  onChange,
+  open = false,
+  onClose,
+}: {
+  view: ViewKey;
+  onChange: (v: ViewKey) => void;
+  open?: boolean;
+  onClose?: () => void;
+}) {
   const { user, signOut } = useAuth();
   const initials = user?.fullName
     ? user.fullName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2)
     : "FG";
 
   return (
+    // Below lg this is an off-canvas drawer: `fixed` takes it out of the shell's
+    // flex row, so the content pane gets the whole screen instead of the ~110px
+    // a 256px rail leaves on a 375px phone. From lg up every class is restored
+    // by the lg: variants — position, width and transform all match the original
+    // static rail, so the desktop layout is byte-identical to before.
     <aside
-      className="flex w-64 2xl:w-72 shrink-0 border-r flex-col h-full"
+      id="app-nav"
+      aria-label="Main navigation"
+      className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] w-[272px] shrink-0 flex-col border-r transition-transform duration-300 lg:static lg:z-auto lg:h-full lg:w-64 lg:translate-x-0 lg:transition-none 2xl:w-72 ${
+        open ? "translate-x-0 shadow-2xl" : "-translate-x-full"
+      }`}
       style={{ borderColor: "var(--border)", background: "var(--panel)" }}
     >
       <div className="px-5 pt-5 pb-4 flex items-center gap-3">
@@ -101,6 +120,17 @@ export function Sidebar({ view, onChange }: { view: ViewKey; onChange: (v: ViewK
             Consortium AML Console
           </div>
         </div>
+        {/* Only reachable while the drawer is open, so it never shows on desktop. */}
+        <button
+          onClick={onClose}
+          aria-label="Close navigation"
+          className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-md border transition hover:bg-[var(--hover)] lg:hidden"
+          style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+        </button>
       </div>
 
       <div className="h-px shrink-0" style={{ background: "var(--border)" }} />
@@ -113,7 +143,10 @@ export function Sidebar({ view, onChange }: { view: ViewKey; onChange: (v: ViewK
           return (
             <button
               key={item.key}
-              onClick={() => onChange(item.key)}
+              onClick={() => {
+                onChange(item.key);
+                onClose?.();     // a tap on mobile should reveal the view it opened
+              }}
               aria-current={active ? "page" : undefined}
               className={`group relative w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all ${
                 active

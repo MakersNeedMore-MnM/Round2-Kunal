@@ -89,10 +89,75 @@ export function TransactionsView() {
           </div>
         )}
 
+        {/* Phone and tablet layout. Nine columns cannot fit 375px — the table
+            keeps its natural width and puts Amount, Risk and Pattern behind a
+            sideways scroll, which hides the three fields that matter most. Each
+            row becomes a card instead, and the page scrolls normally rather than
+            nesting a second scroll box. Hidden from lg up, where the table below
+            takes over unchanged. */}
+        {!loading && transactions.length > 0 && (
+          <div className="divide-y lg:hidden" style={{ borderColor: "var(--border)" }}>
+            {filtered.map((t) => {
+              const p = detectPattern(t.note);
+              return (
+                <div key={t.id} className="p-3.5" style={{ borderColor: "var(--border)" }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[11.5px] tabular-nums" style={{ color: "var(--muted)" }}>
+                      {t.date}
+                    </span>
+                    <SeverityBadge severity={t.severity} />
+                  </div>
+
+                  <div className="mt-1.5 font-mono text-[16px] font-semibold tabular-nums" style={{ color: "var(--text-strong)" }}>
+                    {t.currency === "INR" ? formatINR(t.amount) : `${t.amount.toLocaleString("en-IN")} ${t.currency}`}
+                  </div>
+
+                  {/* break-all, not truncate — an anonymized handle like
+                      ACC-MULE-HUB-2 is the whole point of the row, so it wraps
+                      rather than getting cut to three characters. */}
+                  <div className="mt-1.5 flex items-baseline gap-1.5 text-[12.5px]" style={{ color: "var(--text)" }}>
+                    <span className="break-all">{t.fromAccount}</span>
+                    <span style={{ color: "var(--muted)" }}>→</span>
+                    <span className="break-all">{t.toAccount}</span>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <span className="text-[11.5px]" style={{ color: "var(--muted-2)" }}>
+                      {t.bank} · {t.type}
+                    </span>
+                    {p && (
+                      <span
+                        className="rounded px-1.5 py-0.5 text-[10.5px] font-medium"
+                        style={{ background: `${p.color}22`, color: p.color }}
+                      >
+                        {p.label}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => {
+                        if (confirm("Delete this transaction?")) deleteTx(t.id);
+                      }}
+                      className="ml-auto rounded-md border px-2 py-1 text-[11px] text-red-400/80 transition active:bg-red-500/10"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="p-6 text-center text-[13px]" style={{ color: "var(--muted)" }}>
+                No transactions match your filters
+              </div>
+            )}
+          </div>
+        )}
+
         {!loading && transactions.length > 0 && (
           // Bounded scroll box with a pinned header row: scrolling a 500-row
           // import no longer leaves you guessing which column you are reading.
-          <div className="overflow-auto max-h-[calc(100vh-260px)]">
+          <div className="hidden overflow-auto max-h-[calc(100vh-260px)] lg:block">
             <table className="w-full text-[13px]">
               <thead className="sticky top-0 z-10">
                 <tr

@@ -169,7 +169,13 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
       {/* Explicit column tracks instead of a 12-col span pair. The old
           `xl:col-span-3 / 9` collapsed the rail to full width below 1280px and,
           above it, handed the transcript 75% of an ultrawide monitor. */}
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]">
+      {/* min-h-0 + flex-1 are gated to lg. They exist so the transcript can
+          scroll inside a window-height column, but in the single-column mobile
+          stack they pinned the grid to the viewport and let the chat row shrink
+          to zero — the panel was there with height 0. Below lg the grid takes
+          its content height and the page scrolls; at lg and up the computed
+          values are min-height:0 / flex:1 1 0% exactly as before. */}
+      <div className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)]">
         {/* Left rail */}
         <aside className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           {/* Agent Fleet */}
@@ -243,7 +249,11 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
         </aside>
 
         {/* Chat surface */}
-        <section className="flex min-h-0 min-w-0 flex-col">
+        {/* order-first below lg: in a single column the rail's three cards are
+            ~900px tall, so the conversation — the thing you came for — would
+            start below two screens of scrolling. lg:order-none restores source
+            order, and both items sit at order 0 exactly as before. */}
+        <section className="order-first flex min-w-0 flex-col lg:order-none lg:min-h-0">
           {/* Was a hardcoded 640px tall box. On a 1440×900 monitor that left a
               dead band under the composer, and on a short laptop it overflowed.
               Now the panel takes the height the window gives it and the message
@@ -335,7 +345,11 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
                     }
                   }}
                   placeholder='Ask "Why is Shell Alpha suspicious?" or "Show transfers > ₹10 lakh today"'
-                  className="flex-1 bg-transparent outline-none text-[13.5px]"
+                  // min-w-0: an input's automatic minimum size comes from its
+                  // intrinsic ~177px, so on a 320px phone the row could not
+                  // shrink and pushed the send button off the card. No effect on
+                  // desktop, where the row has 600px to spend.
+                  className="min-w-0 flex-1 bg-transparent outline-none text-[13.5px]"
                   style={{ color: "var(--text)" }}
                   disabled={!!thinking}
                 />
