@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   buildGraphFromTransactions,
   formatINR,
@@ -129,6 +129,42 @@ export function GraphView({
   // was how the stat and the list could disagree.
   const webClusters = useMemo(() => CLUSTERS.filter((c) => c.kind === "web"), [CLUSTERS]);
 
+  // Below lg the pane is about 340px against a 1240px canvas, so at 100% a
+  // phone showed a quarter of the first ring and every cluster card ran off the
+  // right edge — the graph read as broken rather than as something to scroll.
+  // The layout itself cannot be narrowed: a nine-hop chain is 832px of topology
+  // whatever canvas width it is packed into, so shrinking the canvas would push
+  // nodes outside their own card. Fitting the canvas to the pane on first paint
+  // is the fix — the whole network arrives complete, and the zoom controls are
+  // right there to read a ring properly. Desktop never enters this branch: the
+  // query is false from 1024px up, so `narrow` stays false, zoom stays at the
+  // initial 1, and the server-rendered markup is unchanged.
+  const touchedZoom = useRef(false);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const apply = () => {
+      const isNarrow = window.matchMedia("(max-width: 1023px)").matches;
+      setNarrow(isNarrow);
+      if (!isNarrow || touchedZoom.current) return;
+      const el = scrollRef.current;
+      if (!el || !el.clientWidth) return;
+      // Floor is lower than the Fit button's 0.3 on purpose: 0.3 still overflows
+      // a 320px screen, and an overview that is itself cut off defeats the point.
+      setZoom(Math.max(0.16, Math.min(1, (el.clientWidth - 12) / W)));
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, [H, NODES.length]);
+
+  // Any deliberate zoom retires the auto-fit, so a re-render or an orientation
+  // change never yanks the canvas back out from under someone who just zoomed in
+  // to read a label.
+  const zoomBy = (fn: (z: number) => number) => {
+    touchedZoom.current = true;
+    setZoom(fn);
+  };
+
   if (loading) {
     return (
       <Page width="wide" fill>
@@ -161,13 +197,21 @@ export function GraphView({
   // 9.5px account labels landed under 3px and the canvas was unreadable. Now
   // the SVG is rendered at its true size and the viewport scrolls, so a label
   // is always the size it was designed to be whatever the pane width.
-  const viewportH = Math.min(760, Math.max(520, Math.round(H * zoom) + 8));
+  //
+  // The 520px floor is a desktop measure: it stops a two-ring canvas from
+  // sitting in a letterbox on a 27" monitor. On a phone the auto-fitted graph is
+  // only ~290px tall, so that same floor left 200px of empty dark space under
+  // it, which reads as a rendering fault. Below lg the box takes the graph's own
+  // height instead and max-h-[60vh] still caps it once the user zooms in.
+  const fittedH = Math.round(H * zoom) + 8;
+  const viewportH = narrow ? fittedH : Math.min(760, Math.max(520, fittedH));
 
   // Deliberate zoom-out for an overview, computed from the live pane size so it
   // actually fits rather than guessing a factor.
   const fitToView = () => {
     const el = scrollRef.current;
     if (!el) return;
+    touchedZoom.current = true;
     setZoom(Math.max(0.3, Math.min(1, (el.clientWidth - 12) / W)));
   };
 
@@ -220,7 +264,7 @@ export function GraphView({
                 <button
                   key={k}
                   onClick={() => setFilter(k)}
-                  className={`text-[11.5px] rounded-md border px-2.5 py-1 capitalize transition ${
+                  className={`text-[11.5px] rounded-md border px-2.5 py-1.5 capitalize transition lg:py-1 ${
                     filter === k
                       ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
                       : "hover:bg-[var(--hover)]"
@@ -231,42 +275,52 @@ export function GraphView({
                 </button>
               ))}
             </div>
-            <div className="w-px h-5" style={{ background: "var(--border)" }} />
-            <button
-              onClick={() => setZoom((z) => Math.max(0.35, Math.round((z - 0.1) * 100) / 100))}
-              className="w-7 h-7 rounded-md border hover:bg-[var(--hover)]"
-              style={{ borderColor: "var(--border)", color: "var(--text)" }}
-              aria-label="Zoom out"
-            >
-              −
-            </button>
-            <div className="text-[11px] font-mono w-10 text-center" style={{ color: "var(--muted)" }}>
-              {Math.round(zoom * 100)}%
+            {/* Hidden below lg: once the two groups wrap onto separate rows the
+                divider is a stray vertical line at the head of the second one. */}
+            <div className="hidden w-px h-5 lg:block" style={{ background: "var(--border)" }} />
+            {/* The five zoom controls were loose siblings of the filter group, so
+                on a phone they tore apart across three ragged rows — "−  60%" on
+                one, "+  100%" on the next, "Fit" alone on a third. Grouping them
+                makes the toolbar wrap as two whole units. At lg and up every gap
+                is still 8px between the same items, so the desktop row is
+                unchanged. */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => zoomBy((z) => Math.max(0.35, Math.round((z - 0.1) * 100) / 100))}
+                className="h-8 w-8 rounded-md border hover:bg-[var(--hover)] lg:h-7 lg:w-7"
+                style={{ borderColor: "var(--border)", color: "var(--text)" }}
+                aria-label="Zoom out"
+              >
+                −
+              </button>
+              <div className="text-[11px] font-mono w-10 text-center" style={{ color: "var(--muted)" }}>
+                {Math.round(zoom * 100)}%
+              </div>
+              <button
+                onClick={() => zoomBy((z) => Math.min(2, Math.round((z + 0.1) * 100) / 100))}
+                className="h-8 w-8 rounded-md border hover:bg-[var(--hover)] lg:h-7 lg:w-7"
+                style={{ borderColor: "var(--border)", color: "var(--text)" }}
+                aria-label="Zoom in"
+              >
+                +
+              </button>
+              <button
+                onClick={() => zoomBy(() => 1)}
+                className="text-[11px] rounded-md border px-2 py-1.5 hover:bg-[var(--hover)] lg:py-1"
+                style={{ borderColor: "var(--border)", color: "var(--text)" }}
+                title="Back to actual size — labels at full readability"
+              >
+                100%
+              </button>
+              <button
+                onClick={fitToView}
+                className="text-[11px] rounded-md border px-2 py-1.5 hover:bg-[var(--hover)] lg:py-1"
+                style={{ borderColor: "var(--border)", color: "var(--text)" }}
+                title="Zoom out until the whole width fits"
+              >
+                Fit
+              </button>
             </div>
-            <button
-              onClick={() => setZoom((z) => Math.min(2, Math.round((z + 0.1) * 100) / 100))}
-              className="w-7 h-7 rounded-md border hover:bg-[var(--hover)]"
-              style={{ borderColor: "var(--border)", color: "var(--text)" }}
-              aria-label="Zoom in"
-            >
-              +
-            </button>
-            <button
-              onClick={() => setZoom(1)}
-              className="text-[11px] rounded-md border px-2 py-1 hover:bg-[var(--hover)]"
-              style={{ borderColor: "var(--border)", color: "var(--text)" }}
-              title="Back to actual size — labels at full readability"
-            >
-              100%
-            </button>
-            <button
-              onClick={fitToView}
-              className="text-[11px] rounded-md border px-2 py-1 hover:bg-[var(--hover)]"
-              style={{ borderColor: "var(--border)", color: "var(--text)" }}
-              title="Zoom out until the whole width fits"
-            >
-              Fit
-            </button>
           </div>
         </div>
 
@@ -501,17 +555,23 @@ export function GraphView({
             </svg>
           </div>
 
-          {/* HUD */}
+          {/* HUD. Both chips are desktop-only. On a phone they float over a
+              canvas barely wider than they are: the risk count covered the
+              bottom-left ring, and the hint ran nearly edge to edge across the
+              top, wrapped to two lines, and offered "hover" on a device that has
+              no pointer. The count is already in the toolbar above, and the
+              touch-appropriate hint sits in the legend strip below the canvas
+              where it covers nothing. */}
           {highCount > 0 && (
             <div
-              className="pointer-events-none absolute left-3 bottom-3 rounded-md border border-red-500/25 px-2.5 py-1.5 text-[11px] font-mono text-red-300"
+              className="pointer-events-none absolute left-3 bottom-3 hidden rounded-md border border-red-500/25 px-2.5 py-1.5 text-[11px] font-mono text-red-300 lg:block"
               style={{ background: "rgba(0,0,0,0.45)" }}
             >
               {highCount} HIGH RISK NODES DETECTED
             </div>
           )}
           <div
-            className="pointer-events-none absolute right-3 top-3 rounded-md border px-2.5 py-1.5 text-[11px] font-mono"
+            className="pointer-events-none absolute right-3 top-3 hidden rounded-md border px-2.5 py-1.5 text-[11px] font-mono lg:block"
             style={{ borderColor: "var(--border)", background: "rgba(0,0,0,0.45)", color: "var(--text)" }}
           >
             Hover to isolate a ring · click for the full dossier
@@ -524,7 +584,7 @@ export function GraphView({
           bottom of the typology panel, which is not where anyone looks while
           they are still reading the graph. */}
       <div
-        className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border px-4 py-2.5 text-[12px]"
+        className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border px-4 py-2.5 text-[12px] lg:gap-x-6"
         style={{ background: "var(--panel)", borderColor: "var(--border)", color: "var(--text)" }}
       >
         <LegendRow color="#ef4444" label="High risk" />
@@ -539,8 +599,14 @@ export function GraphView({
           </span>
           Number in a node = counterparties
         </span>
-        <span className="ml-auto text-[11.5px]" style={{ color: "var(--muted)" }}>
-          Hover a ring to isolate it · click any node for the full dossier
+        {/* w-full below lg so the hint takes its own line and reads left-aligned
+            like a caption, instead of ml-auto shoving a wrapped sentence against
+            the right edge. From lg up it is ml-auto / width:auto exactly as
+            before. Two wordings because the instruction differs by device: there
+            is no hover on a phone, so it names the gesture that does work. */}
+        <span className="w-full text-[11.5px] lg:ml-auto lg:w-auto" style={{ color: "var(--muted)" }}>
+          <span className="lg:hidden">Tap any node for its full dossier · pinch or use + to zoom in</span>
+          <span className="hidden lg:inline">Hover a ring to isolate it · click any node for the full dossier</span>
         </span>
       </div>
 
