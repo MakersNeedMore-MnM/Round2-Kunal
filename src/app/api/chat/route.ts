@@ -303,6 +303,7 @@ async function askGroq(
   validate: ((content: string) => boolean) | undefined,
   needed: number
 ): Promise<GroqResult> {
+  const startedAt = Date.now();
   // Structural eligibility only: retired, daily budget spent, or known to refuse
   // a request this size. None of these change while a request is in flight.
   // Affordability is deliberately not checked here — it changes with every call
@@ -460,34 +461,55 @@ async function askGroq(
   if (!unusable && cheapest) {
     // Recomputed rather than reusing the walk's figure: the ledger has since been
     // synced against Groq's own header, and whatever we slept above has already
-    // refilled. Quoting the stale number would over-state the wait by exactly the
-    // time we just spent absorbing it. Zero means tokens are actually free now and
-    // something else failed, so let the real failure speak instead.
-    const freeIn = waitFor(cheapest.model, needed);
-    if (freeIn > 0) {
+    // refilled. The shortfall at the end of a request is routinely far smaller
+    // than it was at the start — a request that began thirty seconds short of the
+    // budget can reach this line two seconds short of it.
+    const stillShort = (): GroqResult => {
+      const ms = waitFor(cheapest.model, needed);
       return {
         ok: false,
         status: 429,
-        detail: `token budget short by ${needed} tokens; ${cheapest.model} free in ${freeIn}ms`,
+        detail: `token budget short by ${needed} tokens; ${cheapest.model} free in ${ms}ms`,
         rateLimited: true,
         daily: false,
-        retryMs: freeIn,
+        retryMs: ms,
         quotaHold: true,
       };
+    };
+
+    // Whatever is left of the silent-hold allowance, bounded by both the
+    // per-request wait budget and the same threshold the pre-flight hold uses, so
+    // this cannot turn into a second full-length wait under another name.
+    const freeIn = waitFor(cheapest.model, needed);
+    if (freeIn > Math.min(ABSORB_MS, WAIT_BUDGET_MS - waitedMs)) return stillShort();
+
+    // And not on a request that has already been running a long time. Walking the
+    // chain can cost ten seconds on a slow model before this line is even reached,
+    // and the handler's ceiling is sixty: a readable report at twenty beats a
+    // timeout at sixty, which is a blank screen however good the reasoning was.
+    if (Date.now() - startedAt + freeIn > REQUEST_SOFT_LIMIT_MS) {
+      console.warn(
+        `[FinGuard] ${Date.now() - startedAt}ms spent already; not holding a further ${freeIn}ms for ${cheapest.model}.`
+      );
+      return stillShort();
     }
 
-    // Zero means the bucket refilled while the rest of the chain was being tried:
-    // the model we could not afford at the start of this request is affordable now,
-    // and needs no wait at all. Walking away here would mean having spent those
-    // seconds for nothing and handing back a fallback report we no longer need.
-    // One shot, after every other option is exhausted, so it cannot loop.
+    // Close enough to wait for. Degrading here would hand back a fallback report
+    // while the real answer was a couple of seconds away, on a request that has
+    // already spent longer than that getting to this line.
     console.warn(
-      `[FinGuard] ${cheapest.model} came back into budget while the chain was tried; taking one more shot before degrading.`
+      `[FinGuard] ${cheapest.model} is ${freeIn}ms from affordable after the chain; holding rather than degrading.`
     );
+    await hold(freeIn);
     const r = await tryModel(apiKey, body, cheapest.model, needed);
     if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
     if (r.ok) unusable ??= r;
-    else last = r;
+    else {
+      last = r;
+      // Still short even after waiting it out, so report the number rather than
+      // the status code — the seconds are the only actionable part.
+      if (r.rateLimited && !r.daily) return stillShort();
+    }
   }
 
   return unusable ?? last;
@@ -503,6 +525,11 @@ const ABSORB_MS = 6_000;
 // cap `tryModel` puts on one retry-after, so a request that never absorbed
 // anything still gets the full retry it always did.
 const WAIT_BUDGET_MS = 8_000;
+
+// Past this much elapsed time, the route stops opening new attempts and answers
+// with what it has. Well inside the 60-second handler ceiling, with room for one
+// slow model to finish rather than being cut off mid-answer.
+const REQUEST_SOFT_LIMIT_MS = 30_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
