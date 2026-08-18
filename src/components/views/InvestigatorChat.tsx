@@ -10,6 +10,7 @@ import {
   type ChatMessage,
 } from "@/lib/domain";
 import { useTransactions } from "@/lib/hooks";
+import { useAuth } from "@/components/AuthProvider";
 import { Page } from "../ui/Page";
 
 type EvidenceSummary = {
@@ -22,6 +23,7 @@ type EvidenceSummary = {
 
 export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: string[]) => void } = {}) {
   const { transactions } = useTransactions();
+  const { user } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "m0",
@@ -34,8 +36,21 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
   const [thinking, setThinking] = useState<ChatAgent | "assistant" | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Seconds left on a rate limit. Held separately from `aiError` so it can count
+  // down on its own without the message text being rewritten each tick.
+  const [cooldown, setCooldown] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // A static "wait 24 seconds" goes stale the moment it is read, and the reader
+  // has no way to tell whether it is still true. Ticking it down turns the same
+  // number into something they can act on — and it stops on its own, so nothing
+  // needs clearing elsewhere.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
 
   // Match against the real account list rather than a name pattern, so this
   // works whatever the user's CSV calls its accounts.
@@ -57,6 +72,7 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
     if (!text.trim()) return;
     setAiError(null);
     setNotice(null);
+    setCooldown(0);
     const time = nowLabel();
     setMessages((m) => [...m, { id: `u${Date.now()}`, role: "user", content: text, time }]);
     setInput("");
@@ -78,6 +94,11 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
           message: text,
           mode: forcedMode,
           context,
+          // Rate limits are counted per account rather than per IP address. A
+          // computer lab or a phone on shared Wi-Fi presents one address for
+          // everybody, so limiting by it would make classmates throttle each
+          // other for requests they never made.
+          uid: user?.uid,
           // Only system/user/assistant are legal roles. A finished report is
           // stored locally as role "report", and passing that through verbatim
           // made Groq reject the entire request with "discriminator property
@@ -95,6 +116,12 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
+        // 429 is the rate limiter, and it sends the exact number of seconds left.
+        // Starting the countdown here is what makes the message stay true while
+        // it is on screen.
+        if (res.status === 429 && typeof errData.retryAfter === "number") {
+          setCooldown(errData.retryAfter);
+        }
         throw new Error(errData.error || `API returned ${res.status}`);
       }
 
@@ -327,7 +354,13 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
               )}
               {aiError && (
                 <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
-                  {aiError}
+                  {/* While a cooldown is running the ticking figure is the more
+                      useful of the two, so it replaces the seconds baked into the
+                      server's sentence rather than sitting beside it and
+                      disagreeing with it a second later. */}
+                  {cooldown > 0
+                    ? aiError.replace(/\d+ seconds?/, `${cooldown} second${cooldown === 1 ? "" : "s"}`)
+                    : aiError}
                 </div>
               )}
             </div>

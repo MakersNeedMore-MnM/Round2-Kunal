@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { buildEvidence, evidenceBrief, localReport, type Evidence } from "@/lib/investigation";
 import { formatINR, type Severity, type Transaction } from "@/lib/domain";
+import {
+  checkRate,
+  ledgerSnapshot,
+  refund,
+  release,
+  reserve,
+  seconds,
+  syncFromHeaders,
+  waitFor,
+} from "@/lib/quota";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
@@ -218,7 +228,19 @@ async function discoverModels(apiKey: string): Promise<string[]> {
 
 type GroqResult =
   | { ok: true; content: string; model: string }
-  | { ok: false; status: number; detail: string; rateLimited: boolean; daily: boolean; retryMs: number };
+  | {
+      ok: false;
+      status: number;
+      detail: string;
+      rateLimited: boolean;
+      daily: boolean;
+      retryMs: number;
+      // Set when the token governor declined to send the request at all because
+      // the per-minute allowance could not cover it. Distinct from `rateLimited`,
+      // which means Groq refused one we did send: this one costs no round trip
+      // and comes with an accurate wait rather than a guess.
+      quotaHold?: boolean;
+    };
 
 // One request to one model, no retrying. The caller decides whether waiting or
 // moving along the chain is the better answer to whatever came back, because that
@@ -226,8 +248,13 @@ type GroqResult =
 async function tryModel(
   apiKey: string,
   body: Record<string, unknown>,
-  model: string
+  model: string,
+  needed: number
 ): Promise<GroqResult> {
+  // Debited before the call, because two requests arriving together would
+  // otherwise both read the same healthy ledger and both spend it.
+  reserve(model, needed);
+
   let res: Response;
   try {
     res = await fetch(GROQ_URL, {
@@ -236,8 +263,16 @@ async function tryModel(
       body: JSON.stringify({ ...body, model, ...tuningFor(model) }),
     });
   } catch (err) {
+    // Nothing was spent, so nothing should stay debited.
+    release(model, needed);
     return { ok: false, status: 0, detail: String(err), rateLimited: false, daily: false, retryMs: 0 };
   }
+
+  // Groq prints its own meter on every response, success or failure. Reading it
+  // here is what turns the governor's four-characters-per-token estimate into
+  // the real remaining figure, and it is the only thing that keeps separate
+  // serverless instances from each believing they own the whole allowance.
+  syncFromHeaders(model, res.headers);
 
   if (res.ok) {
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
@@ -268,6 +303,10 @@ async function askGroq(
   validate: ((content: string) => boolean) | undefined,
   needed: number
 ): Promise<GroqResult> {
+  // Structural eligibility only: retired, daily budget spent, or known to refuse
+  // a request this size. None of these change while a request is in flight.
+  // Affordability is deliberately not checked here — it changes with every call
+  // the walk makes, so it is re-tested per model inside the loop.
   const usable = (m: string) =>
     !decommissioned.has(m) &&
     Date.now() - (outOfQuota.get(m) ?? 0) > QUOTA_RETRY_MS &&
@@ -287,6 +326,20 @@ async function askGroq(
   // returned something unreadable" rather than "the AI was unreachable".
   let unusable: GroqResult | null = null;
   const capped: { model: string; retryMs: number }[] = [];
+  // Models skipped without being called, because the ledger says their bucket
+  // cannot cover this request yet. Each carries the exact wait, which is what
+  // lets the caller say "38 seconds" instead of "try again later".
+  const priced: { model: string; waitMs: number }[] = [];
+  // Waiting is worth doing once. A slightly slow real answer beats a fallback
+  // report, so absorbing a few seconds is a good trade — but absorbing them and
+  // then waiting out a retry-after on top spends sixteen seconds to deliver the
+  // local report the first wait could have delivered in six. Both holds below
+  // draw from this one pot.
+  let waitedMs = 0;
+  const hold = async (ms: number) => {
+    await sleep(ms);
+    waitedMs += ms;
+  };
 
   // One shot at each model in turn, recording why each one failed. A per-minute
   // cap on one model says nothing about the next one's allowance — Groq counts
@@ -296,7 +349,17 @@ async function askGroq(
   // those models outright.
   const walk = async (chain: string[]): Promise<GroqResult | null> => {
     for (const model of chain) {
-      const r = await tryModel(apiKey, body, model);
+      // Asked per model rather than once up front: every call in this walk spends
+      // from a bucket, so a model that was affordable when the walk started may
+      // not be by the time its turn arrives. Skipping here costs nothing, where
+      // sending the request would spend a round trip to be told the same thing.
+      const wait = waitFor(model, needed);
+      if (wait > 0) {
+        priced.push({ model, waitMs: wait });
+        continue;
+      }
+
+      const r = await tryModel(apiKey, body, model, needed);
 
       if (r.ok) {
         if (!validate || validate(stripThinking(r.content))) return r;
@@ -346,24 +409,102 @@ async function askGroq(
     }
   }
 
+  // Nothing in the chain could afford the request when its turn came. If the
+  // shortfall clears in a few seconds, absorb it here and say nothing: an answer
+  // that arrives three seconds late is a far better outcome than a fallback
+  // report, and the handler has sixty seconds to spend. Anything longer is not
+  // ours to hide — it goes back to the caller as a number to show the user.
+  const cheapest = priced.sort((a, b) => a.waitMs - b.waitMs)[0];
+  if (cheapest && cheapest.waitMs <= ABSORB_MS) {
+    console.warn(
+      `[FinGuard] holding ${cheapest.waitMs}ms for ${cheapest.model} to refill rather than degrading (needed ${needed} tokens).`
+    );
+    await hold(cheapest.waitMs);
+    const r = await tryModel(apiKey, body, cheapest.model, needed);
+    if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
+    if (r.ok) unusable ??= r;
+    else {
+      last = r;
+      if (r.daily) outOfQuota.set(cheapest.model, Date.now());
+      else if (r.rateLimited) capped.push({ model: cheapest.model, retryMs: r.retryMs });
+    }
+  }
+
   // Nothing was free, so waiting is the only move left. Per-minute caps clear in
   // seconds; take the one clearing soonest and give it one more try. Only one,
   // because the handler has a 60-second ceiling and a fallback report the user
-  // can actually read beats a request that times out.
+  // can actually read beats a request that times out. Skipped outright if the
+  // pre-flight hold above already spent the budget — the shortfall is the same
+  // shortfall, and a second wait buys nothing the first one didn't.
   const soonest = capped.sort((a, b) => a.retryMs - b.retryMs)[0];
-  if (soonest) {
-    await new Promise((r) => setTimeout(r, soonest.retryMs));
-    const r = await tryModel(apiKey, body, soonest.model);
+  if (soonest && soonest.retryMs <= WAIT_BUDGET_MS - waitedMs) {
+    await hold(soonest.retryMs);
+    const r = await tryModel(apiKey, body, soonest.model, needed);
     if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
     if (r.ok) unusable ??= r;
     else {
       last = r;
       if (r.daily) outOfQuota.set(soonest.model, Date.now());
     }
+  } else if (soonest) {
+    console.warn(
+      `[FinGuard] already waited ${waitedMs}ms; not spending another ${soonest.retryMs}ms on ${soonest.model} — answering from the local engine instead.`
+    );
+  }
+
+  // A long quota wait is the most useful thing we know, so it outranks whatever
+  // the last failure happened to be — "free again in 38 seconds" is actionable
+  // where "503 no model available" is not. An unusable 200 still wins over both,
+  // because "the AI answered something unreadable" is a different problem and
+  // saying "wait" about it would send the user in the wrong direction.
+  if (!unusable && cheapest) {
+    // Recomputed rather than reusing the walk's figure: the ledger has since been
+    // synced against Groq's own header, and whatever we slept above has already
+    // refilled. Quoting the stale number would over-state the wait by exactly the
+    // time we just spent absorbing it. Zero means tokens are actually free now and
+    // something else failed, so let the real failure speak instead.
+    const freeIn = waitFor(cheapest.model, needed);
+    if (freeIn > 0) {
+      return {
+        ok: false,
+        status: 429,
+        detail: `token budget short by ${needed} tokens; ${cheapest.model} free in ${freeIn}ms`,
+        rateLimited: true,
+        daily: false,
+        retryMs: freeIn,
+        quotaHold: true,
+      };
+    }
+
+    // Zero means the bucket refilled while the rest of the chain was being tried:
+    // the model we could not afford at the start of this request is affordable now,
+    // and needs no wait at all. Walking away here would mean having spent those
+    // seconds for nothing and handing back a fallback report we no longer need.
+    // One shot, after every other option is exhausted, so it cannot loop.
+    console.warn(
+      `[FinGuard] ${cheapest.model} came back into budget while the chain was tried; taking one more shot before degrading.`
+    );
+    const r = await tryModel(apiKey, body, cheapest.model, needed);
+    if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
+    if (r.ok) unusable ??= r;
+    else last = r;
   }
 
   return unusable ?? last;
 }
+
+// How long the route will silently hold a request waiting for tokens to refill.
+// Comfortably inside the 60-second handler ceiling, and short enough that the
+// person waiting reads it as a slightly slow answer rather than a hang. Past
+// this, telling them the number beats making them stare at a spinner.
+const ABSORB_MS = 6_000;
+
+// The total a single request may spend asleep, across every attempt. Matches the
+// cap `tryModel` puts on one retry-after, so a request that never absorbed
+// anything still gets the full retry it always did.
+const WAIT_BUDGET_MS = 8_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // A model chosen by discovery may be a reasoning model that prints its
 // scratchpad into `content` rather than a separate field. That must never reach
@@ -404,8 +545,21 @@ function sanitizeHistory(history: unknown) {
     .filter((m): m is { role: string; content: string } => m !== null);
 }
 
+// Who to count this request against. The signed-in account is the right unit —
+// a household or a college computer lab shares one public IP, and limiting by
+// address there means classmates throttle each other for no reason. It arrives
+// from the client and is therefore trivially forgeable, which is fine: this
+// limiter divides a shared allowance fairly, it is not a security boundary. The
+// token governor is what actually protects the quota, and claiming somebody
+// else's id does not buy a single extra token from it.
+function callerId(req: Request, uid: unknown): string {
+  if (typeof uid === "string" && uid.trim()) return `u:${uid.trim().slice(0, 128)}`;
+  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return `ip:${forwarded || req.headers.get("x-real-ip") || "local"}`;
+}
+
 export async function POST(req: Request) {  try {
-    const { message, history, context, mode: forcedMode } = await req.json();
+    const { message, history, context, mode: forcedMode, uid } = await req.json();
 
     if (!message || typeof message !== "string") {
       return NextResponse.json({ error: "Message is required" }, { status: 400 });
@@ -477,6 +631,53 @@ export async function POST(req: Request) {  try {
       }
     }
 
+    // Counted only now, after the cache has had its chance. A repeated question
+    // is answered from memory without touching Groq, so charging it against
+    // anyone's allowance would punish the one usage pattern that costs nothing —
+    // and it is exactly the pattern a demo relies on.
+    const who = callerId(req, uid);
+    const kind = investigate ? "investigate" : "casual";
+    const verdict = checkRate(who, kind);
+
+    if (!verdict.ok) {
+      // A slot about to open is worth waiting for. Absorbing it here turns a
+      // refusal into a slightly slow answer, which is almost always what the
+      // person clicking actually wanted.
+      if (verdict.retryAfterMs <= ABSORB_MS) {
+        await sleep(verdict.retryAfterMs);
+      } else {
+        const wait = seconds(verdict.retryAfterMs);
+        const busy =
+          verdict.scope === "global"
+            ? "The console is handling a lot of requests right now"
+            : "That's a lot of requests in one minute";
+        console.warn(`[FinGuard] rate limit (${verdict.scope}) for ${who} on ${kind}; ${wait}s to wait.`);
+
+        // An investigation still produces its report. The built-in engine reads
+        // the same evidence and needs no quota, so there is no reason to show
+        // someone a refusal when a real answer is available.
+        if (investigate) {
+          return NextResponse.json(
+            investigatePayload(
+              evidence,
+              localReport(evidence),
+              `${busy} — this report came from the built-in analysis engine. The AI's wording is free again in ${wait} seconds.`
+            )
+          );
+        }
+        // A chat turn has no local equivalent, so this is the one place a plain
+        // refusal is the honest answer. `retryAfter` drives the countdown in the UI.
+        return NextResponse.json(
+          {
+            error: `${busy}. Please wait ${wait} seconds and try again.`,
+            retryAfter: wait,
+          },
+          { status: 429, headers: { "Retry-After": String(wait) } }
+        );
+      }
+    }
+
+    const needed = estimateTokens(messages, maxTokens);
     const outcome = await askGroq(
       apiKey,
       {
@@ -488,18 +689,34 @@ export async function POST(req: Request) {  try {
       // Only the investigate path has a shape it must hit. A casual reply is
       // whatever the model said, so any non-empty answer is usable.
       investigate ? (content) => parseAgents(content) !== null : (content) => content.trim().length > 0,
-      estimateTokens(messages, maxTokens)
+      needed
     );
 
     if (!outcome.ok) {
       console.error("[FinGuard] Groq unavailable:", outcome.status, outcome.detail);
-      const { rateLimited, daily } = outcome;
-      // A daily cap needs hours, a per-minute cap needs seconds. Saying "wait a
-      // minute" when the answer is "wait until tomorrow" just wastes the user's
-      // time on retries that cannot succeed.
+      const { rateLimited, daily, quotaHold } = outcome;
+      // The slot was charged for a call that never produced an answer, so hand it
+      // back — a user whose request broke on a 400 or a 5xx should not pay the
+      // same allowance as one who was served.
+      //
+      // But not when the failure was the pace itself. A quota hold or a 429 means
+      // this request arrived faster than the free tier can absorb, which is the
+      // precise thing the limiter is counting; refunding it would let someone
+      // hammer the button forever, each refusal handing its slot straight back,
+      // and the per-user counter would never reach its cap.
+      if (!rateLimited) refund(who, kind);
+
+      const held = quotaHold ? seconds(outcome.retryMs) : 0;
+      // A daily cap needs hours, a per-minute cap needs seconds, and a governor
+      // hold knows the exact figure. Saying "wait a minute" when the answer is
+      // "wait until tomorrow" just wastes the user's time on retries that cannot
+      // succeed — and saying "a minute" when we know it is nine is worse advice
+      // than the number we already have.
       const waitAdvice = daily
         ? "You've used up today's free AI quota — it resets on a rolling 24-hour window."
-        : "The free AI tier only allows so many requests a minute.";
+        : quotaHold
+          ? `The free AI tier's per-minute token budget is spent — it refills in ${held} seconds.`
+          : "The free AI tier only allows so many requests a minute.";
 
       if (investigate) {
         return NextResponse.json(
@@ -517,14 +734,22 @@ export async function POST(req: Request) {  try {
       return NextResponse.json({
         mode: "casual",
         reply: rateLimited
-          ? `${waitAdvice} That's a limit on the free plan, not a problem with your data or your key. ${daily ? "Run full investigation still works in the meantime — it uses the built-in engine and needs no AI." : "Give it a minute and ask again, or use Run full investigation, which works either way."}`
+          ? `${waitAdvice} That's a limit on the free plan, not a problem with your data or your key. ${daily ? "Run full investigation still works in the meantime — it uses the built-in engine and needs no AI." : "Give it a moment and ask again, or use Run full investigation, which works either way."}`
           : "The AI service didn't respond just now. Try again in a moment — Run full investigation works either way, since it can fall back to the built-in engine.",
         suggestions: followUps(evidence),
         degraded: rateLimited ? waitAdvice : "AI service unavailable.",
+        ...(quotaHold ? { retryAfter: held } : {}),
       });
     }
 
     const raw = stripThinking(outcome.content);
+
+    // What the governor believes is left in the bucket that just answered. Rides
+    // along for the same reason the model id does: it costs nothing, it is not a
+    // secret, and it turns "why was that one slower" into one glance at the
+    // network tab. The QA harness reads it to check the ledger tracks Groq's own
+    // headers rather than drifting.
+    const budget = ledgerSnapshot(outcome.model);
 
     if (!investigate) {
       const clean = raw.replace(/```[a-z]*\n?/gi, "").replace(/```/g, "").trim();
@@ -536,11 +761,13 @@ export async function POST(req: Request) {  try {
         reply: clean,
         suggestions: followUps(evidence),
         model: outcome.model,
+        budget,
       });
     }
 
     const agents = parseAgents(raw);
     if (!agents) {
+      refund(who, kind);
       return NextResponse.json(
         investigatePayload(
           evidence,
@@ -558,7 +785,7 @@ export async function POST(req: Request) {  try {
       cache.set(key, { at: Date.now(), model: outcome.model, content: raw });
     }
 
-    return NextResponse.json({ ...investigatePayload(evidence, agents), model: outcome.model });  } catch (err) {
+    return NextResponse.json({ ...investigatePayload(evidence, agents), model: outcome.model, budget });  } catch (err) {
     console.error("[FinGuard] Chat API error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
