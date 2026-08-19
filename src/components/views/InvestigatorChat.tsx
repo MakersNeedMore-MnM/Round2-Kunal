@@ -21,6 +21,26 @@ type EvidenceSummary = {
   highCount: number;
 };
 
+// What the session-context row shows when a report came from the built-in
+// analysis engine rather than the AI. Worth naming: the panels look identical
+// either way, and a reader comparing two runs deserves to know which is which.
+const LOCAL_ENGINE = "built-in engine";
+
+/**
+ * "models/gemini-3.1-flash-live-preview" is half again too long for a 200px
+ * rail, so the row shows the family and variant and the exact id lives in the
+ * tooltip. Before the first reply there is nothing to report, so it names the
+ * model the route is pinned to.
+ */
+function engineLabel(model: string | null): string {
+  if (!model) return "gemini · 3.1-flash-live";
+  if (model === LOCAL_ENGINE) return LOCAL_ENGINE;
+  return model
+    .replace(/^models\//, "")
+    .replace(/^gemini-/, "gemini · ")
+    .replace(/-preview$/, "");
+}
+
 export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: string[]) => void } = {}) {
   const { transactions } = useTransactions();
   const { user } = useAuth();
@@ -40,6 +60,10 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
   // down on its own without the message text being rewritten each tick.
   const [cooldown, setCooldown] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
+  // Which brain answered last. The API names the model on every AI-served reply
+  // and omits it when the built-in engine stood in, so this is the one honest
+  // place to say which of the two produced what is on screen.
+  const [engine, setEngine] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // A static "wait 24 seconds" goes stale the moment it is read, and the reader
@@ -99,11 +123,12 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
           // everybody, so limiting by it would make classmates throttle each
           // other for requests they never made.
           uid: user?.uid,
-          // Only system/user/assistant are legal roles. A finished report is
+          // Gemini accepts two roles, "user" and "model". A finished report is
           // stored locally as role "report", and passing that through verbatim
-          // made Groq reject the entire request with "discriminator property
-          // 'role' has invalid value" — which is why every follow-up asked
-          // after an investigation came back as "AI service unavailable".
+          // gets the whole turn rejected — which is why every follow-up asked
+          // after an investigation once came back as "AI service unavailable".
+          // The API sanitises this again on arrival; sending clean roles just
+          // means it never has to.
           history: messages
             .filter((m) => m.role !== "system")
             .slice(-8)
@@ -128,6 +153,7 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
       const data = await res.json();
       if (data.degraded) setNotice(data.degraded);
       if (data.evidence) setEvidence(data.evidence);
+      setEngine(data.model ?? LOCAL_ENGINE);
 
       if (data.mode === "casual") {
         setThinking(null);
@@ -270,7 +296,7 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
               ) : (
                 <ContextRow k="Analysis" v="not run yet" />
               )}
-              <ContextRow k="Model" v="groq · llama-3.3-70b" mono />
+              <ContextRow k="Model" v={engineLabel(engine)} title={engine ?? undefined} mono />
             </div>
           </div>
         </aside>
@@ -427,11 +453,17 @@ function historyText(m: ChatMessage): string {
     .join("\n");
 }
 
-function ContextRow({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+function ContextRow({ k, v, mono, title }: { k: string; v: string; mono?: boolean; title?: string }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex items-center justify-between gap-2">
       <span style={{ color: "var(--muted-2)" }}>{k}</span>
-      <span className={mono ? "font-mono" : ""} style={{ color: "var(--text)" }}>{v}</span>
+      <span
+        className={`min-w-0 truncate ${mono ? "font-mono" : ""}`}
+        title={title}
+        style={{ color: "var(--text)" }}
+      >
+        {v}
+      </span>
     </div>
   );
 }

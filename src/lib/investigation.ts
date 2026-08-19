@@ -689,6 +689,81 @@ export function evidenceBrief(ev: Evidence): string {
   return lines.join("\n");
 }
 
+/**
+ * The same evidence, sized for a conversation instead of a report.
+ *
+ * `evidenceBrief` above is a working document: on a 30-row upload it runs to
+ * 8,100 characters, most of it stage directions written for the four-agent panel
+ * — "do not reduce them to a count of accounts", "never state a payer count that
+ * is not on this list", "say so plainly". Handing all of that to a two-sentence
+ * question measured 16 to 19 seconds a turn, against 4.8 for the full
+ * investigation the same brief was written for. The model spends the difference
+ * reconciling a small question with a large set of instructions aimed at a
+ * different job. The identical question against a 1,100-character brief came back
+ * in under two seconds.
+ *
+ * So this keeps every fact a chat answer might quote and drops all the
+ * directives: what is in the data, how bad it is, and one line per finding. About
+ * a fifth of the size, which is also a fifth of the per-minute token budget.
+ */
+export function casualBrief(ev: Evidence): string {
+  if (!ev.txCount) return "NO TRANSACTION DATA UPLOADED.";
+
+  const lines: string[] = [
+    `PORTFOLIO: ${ev.txCount} transfers, ${ev.accountCount} accounts, ${money(ev.totalValue)} total.`,
+    `RISK SPLIT: ${ev.bySeverity.high} high-risk (${money(ev.highValue)}), ${ev.bySeverity.medium} medium, ${ev.bySeverity.safe} routine.`,
+  ];
+  if (ev.dateRange) lines.push(`PERIOD: ${ev.dateRange.from} to ${ev.dateRange.to}.`);
+  if (ev.banks.length) lines.push(`BANKS (${ev.banks.length}): ${ev.banks.join(", ")}.`);
+
+  // Stated as a fact either way. Left to the model it hedged both directions in
+  // one breath, and whether money left the country is not a matter of opinion.
+  const border = ev.findings.find((f) => f.code === "CROSS-BORDER");
+  lines.push(
+    border
+      ? `CROSS-BORDER: yes — ${money(border.amount)} left India by overseas wire.`
+      : `CROSS-BORDER: no — every transfer stayed inside India.`
+  );
+
+  if (ev.channels.length) {
+    lines.push(
+      `CHANNELS: ${ev.channels.map((c) => `${c.type} (${c.count})`).join(", ")} — all electronic, no cash.`
+    );
+  }
+  if (ev.typologies.length) {
+    lines.push(`TYPOLOGIES: ${ev.typologies.map((t) => `${t.label} (${t.count})`).join(", ")}.`);
+  }
+
+  // `short` exists for the on-screen report — one sentence carrying the numbers —
+  // which is exactly what a conversational answer quotes. Five is enough: an
+  // answer that reaches for a sixth finding is no longer 2-5 sentences.
+  if (ev.findings.length) {
+    lines.push(`FINDINGS (${ev.findings.length}):`);
+    ev.findings.slice(0, 5).forEach((f) => lines.push(`  - ${f.short}`));
+  }
+
+  const notable = ev.rings.filter((r) => r.accounts.length >= 3);
+  if (notable.length) {
+    const biggest = notable.reduce((a, b) => (b.total > a.total ? b : a));
+    lines.push(
+      `RINGS: ${notable.length} groups of 3+ linked accounts. Largest is ${biggest.accounts.length} accounts ` +
+        `moving ${money(biggest.total)}, shaped as a ${biggest.shapeLabel}` +
+        `${biggest.hubs.length ? `, centred on ${biggest.hubs[0]}` : ", with no centre"}.`
+    );
+  }
+
+  if (ev.topCounterparties.length) {
+    lines.push(`BUSIEST ACCOUNTS:`);
+    ev.topCounterparties.slice(0, 3).forEach((c) => {
+      lines.push(
+        `  ${c.account}: received ${money(c.inAmount)} in ${c.inCount}, sent ${money(c.outAmount)} in ${c.outCount}.`
+      );
+    });
+  }
+
+  return lines.join("\n");
+}
+
 // ── Offline fallback ──────────────────────────────────────────────────────
 // Written straight from the evidence when the AI is unreachable, so the user
 // still gets a specific, readable report instead of an error bubble.

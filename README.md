@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![Firebase](https://img.shields.io/badge/Firebase-Auth%20%2B%20Firestore-FFCA28?style=flat-square&logo=firebase&logoColor=black)](https://firebase.google.com)
-[![Groq](https://img.shields.io/badge/Groq-Llama%203.3%2070B-F55036?style=flat-square)](https://groq.com)
+[![Gemini](https://img.shields.io/badge/Gemini-3.1%20Flash%20Live-4285F4?style=flat-square&logo=googlegemini&logoColor=white)](https://ai.google.dev)
 
 **Upload a transaction ledger. Get back a case file.**
 
@@ -117,7 +117,7 @@ model's to invent.
 - **Follow-ups keep context.** Run an investigation, then ask "which accounts should I
   freeze first?" and the panel answers from what it just found.
 - One-tap **suggested follow-ups** after every reply.
-- **Works with no API key.** If `GROQ_API_KEY` is absent, rate-limited or the response
+- **Works with no API key.** If `GEMINI_API_KEY` is absent, rate-limited or the response
   is malformed, the same evidence brief is rendered by a deterministic offline engine.
   The app never shows an empty screen; it degrades to a slightly plainer report.
 
@@ -217,7 +217,7 @@ src/
 │   ├── page.tsx              Single-page shell, view routing
 │   ├── login/page.tsx        Sign-in / registration
 │   ├── globals.css           Design tokens + the print-only SAR stylesheet
-│   └── api/chat/route.ts     Investigation endpoint — grounding, Groq call, fallback
+│   └── api/chat/route.ts     Investigation endpoint — grounding, Gemini call, fallback
 ├── components/
 │   ├── AppShell.tsx          Sidebar + top bar + scroll model
 │   ├── AuthProvider.tsx      Firebase auth context
@@ -253,10 +253,11 @@ service cloud.firestore {
 
 **Where the intelligence lives.** The analysis layer is deliberately server-side and
 model-free. `investigation.ts` (~1,250 lines) does the detection; `route.ts` decides
-whether a message is a question or an investigation, builds the brief, calls Groq with a
-retry/back-off that recognises daily rate caps, and falls back to the local report
-generator on any failure. The UI never talks to Groq directly and the API key never
-reaches the browser.
+whether a message is a question or an investigation, builds the brief, calls Gemini
+through a token governor that recognises daily rate caps, and falls back to the local
+report generator on any failure. `gemini.ts` holds the transport — a Live API WebSocket
+session, because the pinned model speaks no other protocol. The UI never talks to Gemini
+directly and the API key never reaches the browser.
 
 ---
 
@@ -266,9 +267,9 @@ The app is a stock Next.js App Router project and deploys to Vercel with no
 configuration:
 
 1. **Import** the repository at [vercel.com/new](https://vercel.com/new).
-2. Add the environment variables from the table above under
+2. Add the environment variables from [`.env.example`](.env.example) under
    **Settings → Environment Variables** (all seven `NEXT_PUBLIC_FIREBASE_*`, plus
-   `GROQ_API_KEY` if you have one). `NEXT_PUBLIC_*` values must be present at build time.
+   `GEMINI_API_KEY` if you have one). `NEXT_PUBLIC_*` values must be present at build time.
 3. In the Firebase console, add your Vercel domain under
    **Authentication → Settings → Authorized domains**, or sign-in will be rejected in
    production.
@@ -288,7 +289,7 @@ npm run build    # verify the production build locally first
 | Language | **TypeScript** (strict) | The evidence engine is the product; it needs types |
 | Styling | **Tailwind CSS** + CSS custom properties | One token set drives dark, light and print |
 | Auth & data | **Firebase** Auth + Firestore | Per-user isolation with no backend to run |
-| Inference | **Groq** · Llama 3.3 70B | Fast enough that a four-agent panel answers in seconds |
+| Inference | **Google Gemini** · 3.1 Flash Live | A four-agent panel answers in about four seconds |
 | Visualisation | **Hand-rolled SVG** | No chart library — the graph layout is bespoke, so the cluster cards can be too |
 
 **Zero runtime dependencies beyond the framework.** `package.json` lists four production
@@ -306,6 +307,6 @@ its output is a starting point for a human investigator, not a legal determinati
 
 <div align="center">
 
-**Built with Next.js, Firebase and Groq.**
+**Built with Next.js, Firebase and Google Gemini.**
 
 </div>

@@ -1,25 +1,25 @@
 import { NextResponse } from "next/server";
-import { buildEvidence, evidenceBrief, localReport, type Evidence } from "@/lib/investigation";
+import { buildEvidence, casualBrief, evidenceBrief, localReport, type Evidence } from "@/lib/investigation";
 import { formatINR, type Severity, type Transaction } from "@/lib/domain";
+import { askGemini, type GeminiTurn } from "@/lib/gemini";
 import {
   checkRate,
   ledgerSnapshot,
+  noteExhausted,
   refund,
   release,
   reserve,
   seconds,
-  syncFromHeaders,
+  syncFromUsage,
   waitFor,
 } from "@/lib/quota";
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-
 // Vercel gives a route handler 10 seconds by default, and a four-agent
-// investigation legitimately takes longer than that — more still if the first
-// model in the chain is rate-limited and the request has to fall through to the
-// second. A killed function looks exactly like a broken AI from the user's side,
-// so raise the ceiling to the plan's maximum and let the fallback logic decide
-// when to give up. 60s is a limit, not a target: a normal reply lands in 2–4.
+// investigation legitimately takes longer than that — more still if the token
+// budget is short and the request waits for it to refill. A killed function looks
+// exactly like a broken AI from the user's side, so raise the ceiling to the
+// plan's maximum and let the fallback logic decide when to give up. 60s is a
+// limit, not a target: a real four-agent answer measures about 4 seconds.
 export const maxDuration = 60;
 
 // Two modes: normal chat for questions and small talk, and the 4-agent panel
@@ -97,75 +97,39 @@ The 4 agents, in this exact order:
 
 ${PLAIN_LANGUAGE_RULES}`;
 
-// Groq retires models on a rolling schedule, and a route pinned to one model id
-// dies silently the day its model goes: the endpoint answers 404
-// model_not_found, every AI call fails, and the reply quietly comes from the
-// local engine instead. From the outside that looks exactly like "the AI worked
-// for a couple of days and then stopped" — and it recurs, because replacing the
-// API key never touched the real cause. So the model is a chain, not a constant,
-// and the chain can rebuild itself from Groq's own catalogue if every id in it is
-// ever retired at once.
+// One model, pinned, by requirement: models/gemini-3.1-flash-live-preview. There
+// is no chain behind it and no catalogue discovery, which is worth stating
+// plainly because an earlier version of this route had both and they existed for
+// a reason — a route pinned to a single id dies the day that id is retired, and a
+// "-preview" id is precisely the kind that gets retired. What stops that from
+// looking like "the AI worked for two days and then stopped" is the local
+// analysis engine: every failure path below ends in a real report computed from
+// the same evidence, so the console degrades in wording rather than in function.
 //
-// The per-minute token ceiling matters as much as the model does, and it is the
-// other half of the same complaint. Groq charges prompt + max_tokens against the
-// allowance up front, and one full investigation is between 6,000 and 8,000
-// tokens of it, so a single investigation very nearly empties the free tier's
-// per-minute budget in one shot. Casual chat is far cheaper and fits easily —
-// which is exactly why chatting kept working while "Run full investigation"
-// quietly served the local engine.
+// The transport lives in src/lib/gemini.ts, because reaching this model is not a
+// normal REST call — it declares only bidiGenerateContent, and it is an
+// audio-native Live model that refuses a TEXT response modality outright. See the
+// header comment there for what was tried and what the endpoint actually answered.
 //
-// The ceilings below are the ones actually observed on this account, not the ones
-// advertised in the response headers. groq/compound reports 70,000 but routes
-// internally to llama-3.3-70b-versatile and inherits its 12,000, so that is the
-// number worth reasoning about. The two gpt-oss models share a single 8,000
-// bucket between them.
-//
-// Declaration order is fastest first; chainFor() promotes the roomier models when
-// a request is too big for the quick ones.
-const CATALOGUE: { id: string; tpm: number }[] = [
-  { id: "openai/gpt-oss-120b", tpm: 8_000 },
-  { id: "openai/gpt-oss-20b", tpm: 8_000 },
-  // Not compound-mini: on the full investigate prompt it returns an empty
-  // completion every time, which costs seven seconds to learn nothing.
-  { id: "groq/compound", tpm: 12_000 },
-];
-const MODELS = CATALOGUE.map((m) => m.id);
-
-// Models that cannot hold the request are still tried, last: the estimate is
-// deliberately rough, and a long shot beats refusing to ask.
-const chainFor = (needed: number) => [
-  ...CATALOGUE.filter((m) => m.tpm >= needed).map((m) => m.id),
-  ...CATALOGUE.filter((m) => m.tpm < needed).map((m) => m.id),
-];
+// Cost per turn, measured on the real prompts: a four-agent investigation is
+// about 3,000 tokens of prompt and lands in roughly 4 seconds; a casual turn is
+// well under a thousand. Both are far cheaper against a per-minute allowance than
+// the Groq free tier they replaced, where one investigation very nearly emptied
+// the whole minute's budget in a single shot.
 
 // Four characters per token is crude, but it only has to be good enough to tell
-// an 8,000-token request from a 3,000-token one.
-const estimateTokens = (messages: { content: string }[], maxTokens: number) =>
-  Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 4) + maxTokens;
+// a 3,000-token request from a 600-token one. The real figure arrives with the
+// answer in `usageMetadata` and settles the ledger afterwards.
+const estimateTokens = (turns: { text: string }[], system: string, maxTokens: number) =>
+  Math.ceil((turns.reduce((n, t) => n + t.text.length, 0) + system.length) / 4) + maxTokens;
 
-// Ids this process has proven are gone, ids whose daily budget is spent (with
-// the moment it ran out), and anything a catalogue lookup turned up. All three
-// are per-process on purpose: a redeploy or a cold start re-tests everything,
-// which is the right cadence for facts that only change when Groq retires a
-// model or a 24-hour window rolls over.
-const decommissioned = new Set<string>();
-const outOfQuota = new Map<string, number>();
-// Some models refuse a large request outright with 413 rather than answering or
-// reporting a token limit — groq/compound does exactly that with the full
-// investigation prompt. Remember the size that was refused so requests that big
-// skip the model next time, while smaller ones still get to use it.
-const refusedAbove = new Map<string, number>();
-let discovered: string[] = [];
-const QUOTA_RETRY_MS = 60 * 60 * 1000;
-
-// A full investigation costs most of the free tier's per-minute token allowance,
-// so two clicks in close succession cannot both reach the AI — the second used to
-// drop to the local engine, which looks like the feature breaking at precisely
-// the worst moment, with somebody watching. But the data behind a report does not
-// change between those two clicks, so the report does not need to either. Keeping
-// the last few successful answers means a repeated question comes back instantly,
-// spends no quota, and reads identically to the first time. This is what makes a
-// demo repeatable rather than a coin toss.
+// The data behind a report does not change between two clicks of the same
+// button, so the report does not need to either. Keeping the last few successful
+// answers means a repeated question comes back instantly, spends no quota, and
+// reads identically to the first time. That last property is the one that
+// matters: it makes a demo repeatable rather than a coin toss, and it is the
+// difference between a judge seeing the same report twice and seeing the AI's
+// wording drift between two runs on the same file.
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const CACHE_MAX = 24;
 const cache = new Map<string, { at: number; model: string; content: string }>();
@@ -180,54 +144,13 @@ function fingerprint(s: string) {
   return (h >>> 0).toString(36);
 }
 
-const isGone = (status: number, detail: string) =>
-  status === 404 ||
-  /model_not_found|model_decommissioned|decommissioned|has been deprecated|does not exist/i.test(detail);
-
-const isDailyCap = (detail: string) =>
-  /per day|tokens per day|requests per day|\bTPD\b|\bRPD\b/i.test(detail);
-
-// The gpt-oss models reason before answering, and by default that reasoning is
-// billed against the same per-minute allowance as the answer even though this
-// route only ever reads `content`. Measured on the real investigate request:
-// 1,309 tokens a call by default against 709 with low effort and the trace
-// hidden — the same four agents for 46% less, so nearly twice as many
-// investigations fit inside the free tier's 8,000-per-minute window. Only that
-// family accepts these two fields, so they are gated on the id rather than sent
-// blind and risking a 400.
-const tuningFor = (model: string) =>
-  model.startsWith("openai/gpt-oss")
-    ? { reasoning_effort: "low", reasoning_format: "hidden" }
-    : {};
-
-// Called only when every id we know about has come back 404 — the exact scenario
-// this mechanism exists for. Groq's own catalogue is the one source that is
-// always current, so ask it rather than waiting for someone to notice the outage
-// and edit this file.
-async function discoverModels(apiKey: string): Promise<string[]> {
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!res.ok) return [];
-    const body = (await res.json()) as { data?: { id?: string; context_window?: number }[] };
-    return (body.data ?? [])
-      .filter((m): m is { id: string; context_window?: number } => typeof m.id === "string")
-      // Speech, embedding and moderation models cannot answer a chat turn at
-      // all, and the investigate prompt alone runs to about 2,500 tokens, so a
-      // small context window is a guaranteed failure rather than a gamble.
-      .filter((m) => !/whisper|tts|embed|guard/i.test(m.id) && (m.context_window ?? 0) >= 16_000)
-      .sort((a, b) => (b.context_window ?? 0) - (a.context_window ?? 0))
-      .map((m) => m.id)
-      .filter((id) => !decommissioned.has(id))
-      .slice(0, 3);
-  } catch {
-    return [];
-  }
-}
-
-type GroqResult =
-  | { ok: true; content: string; model: string }
+// A request the governor declined to send, or one Google refused for quota, is a
+// different problem from a model that answered badly, and the two need different
+// words in front of the user: one is "wait eleven seconds", the other is "the AI
+// returned something unreadable". Keeping them apart here is what lets the
+// handler give advice instead of a status code.
+type Attempt =
+  | { ok: true; text: string; model: string }
   | {
       ok: false;
       status: number;
@@ -237,282 +160,141 @@ type GroqResult =
       retryMs: number;
       // Set when the token governor declined to send the request at all because
       // the per-minute allowance could not cover it. Distinct from `rateLimited`,
-      // which means Groq refused one we did send: this one costs no round trip
+      // which means Google refused one we did send: this one costs no round trip
       // and comes with an accurate wait rather than a guess.
       quotaHold?: boolean;
     };
 
-// One request to one model, no retrying. The caller decides whether waiting or
-// moving along the chain is the better answer to whatever came back, because that
-// judgement needs to see the whole chain and this function only sees one model.
-async function tryModel(
+// Failures worth a second attempt. A dropped socket, a timeout and a 5xx are all
+// "ask again" — the Live API opens a fresh session per turn, so there is no state
+// to be confused by a retry. A 1007 (invalid argument) is not: the request is
+// wrong and will be wrong the second time too.
+const isTransient = (status: number) =>
+  status === 0 || status === 408 || status === 503 || status === 1006 || status === 1011;
+
+// One turn, with the only two forms of persistence a single pinned model allows:
+// the governor decides whether to send at all, and a failure that a short wait or
+// a resample could plausibly fix gets exactly one more go.
+//
+// `validate` lets the caller reject an answer this route cannot use. The
+// investigate path needs parseable JSON for four agents, and the model can return
+// prose, or truncate at maxOutputTokens, and still call that a completed turn.
+// With no second model to fall through to, a resample is the only second chance
+// there is — and it is a real one, because that failure is usually sampling
+// rather than the prompt.
+async function askModel(
   apiKey: string,
-  body: Record<string, unknown>,
-  model: string,
+  request: { system: string; turns: GeminiTurn[]; temperature: number; maxOutputTokens: number },
+  validate: (text: string) => boolean,
   needed: number
-): Promise<GroqResult> {
-  // Debited before the call, because two requests arriving together would
-  // otherwise both read the same healthy ledger and both spend it.
-  reserve(model, needed);
-
-  let res: Response;
-  try {
-    res = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, model, ...tuningFor(model) }),
-    });
-  } catch (err) {
-    // Nothing was spent, so nothing should stay debited.
-    release(model, needed);
-    return { ok: false, status: 0, detail: String(err), rateLimited: false, daily: false, retryMs: 0 };
-  }
-
-  // Groq prints its own meter on every response, success or failure. Reading it
-  // here is what turns the governor's four-characters-per-token estimate into
-  // the real remaining figure, and it is the only thing that keeps separate
-  // serverless instances from each believing they own the whole allowance.
-  syncFromHeaders(model, res.headers);
-
-  if (res.ok) {
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    return { ok: true, content: data.choices?.[0]?.message?.content ?? "", model };
-  }
-
-  const detail = (await res.text().catch(() => "")).slice(0, 400);
-  const retryAfter = Number(res.headers.get("retry-after"));
-  return {
-    ok: false,
-    status: res.status,
-    detail,
-    rateLimited: res.status === 429,
-    daily: res.status === 429 && isDailyCap(detail),
-    retryMs: Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 8000) : 1500,
-  };
-}
-
-// `validate` lets the caller reject a 200 that this route cannot actually use.
-// The investigate path needs parseable JSON for four agents, and a model can
-// return prose, or truncate the JSON at max_tokens, and still call that success —
-// which used to spend the whole request and drop to the local engine while two
-// perfectly good models sat further down the chain untried. An unusable answer is
-// now treated like any other failure: keep walking.
-async function askGroq(
-  apiKey: string,
-  body: Record<string, unknown>,
-  validate: ((content: string) => boolean) | undefined,
-  needed: number
-): Promise<GroqResult> {
+): Promise<Attempt> {
   const startedAt = Date.now();
-  // Structural eligibility only: retired, daily budget spent, or known to refuse
-  // a request this size. None of these change while a request is in flight.
-  // Affordability is deliberately not checked here — it changes with every call
-  // the walk makes, so it is re-tested per model inside the loop.
-  const usable = (m: string) =>
-    !decommissioned.has(m) &&
-    Date.now() - (outOfQuota.get(m) ?? 0) > QUOTA_RETRY_MS &&
-    needed < (refusedAbove.get(m) ?? Infinity);
-  const pool = () => [...chainFor(needed), ...discovered];
 
-  let last: GroqResult = {
-    ok: false,
-    status: 503,
-    detail: "no Groq model available",
-    rateLimited: false,
-    daily: false,
-    retryMs: 0,
-  };
-  // An answer that arrived but failed validation. Kept so that if nothing in the
-  // chain validates, the caller still sees a real 200 and can report "the AI
-  // returned something unreadable" rather than "the AI was unreachable".
-  let unusable: GroqResult | null = null;
-  const capped: { model: string; retryMs: number }[] = [];
-  // Models skipped without being called, because the ledger says their bucket
-  // cannot cover this request yet. Each carries the exact wait, which is what
-  // lets the caller say "38 seconds" instead of "try again later".
-  const priced: { model: string; waitMs: number }[] = [];
-  // Waiting is worth doing once. A slightly slow real answer beats a fallback
-  // report, so absorbing a few seconds is a good trade — but absorbing them and
-  // then waiting out a retry-after on top spends sixteen seconds to deliver the
-  // local report the first wait could have delivered in six. Both holds below
-  // draw from this one pot.
+  // Everything this request may spend asleep, across every attempt. Waiting is
+  // worth doing once — a real answer three seconds late beats a fallback report —
+  // but waiting twice for the same shortfall spends sixteen seconds to deliver
+  // what the first wait could have delivered in six. Both holds draw from this pot.
   let waitedMs = 0;
   const hold = async (ms: number) => {
     await sleep(ms);
     waitedMs += ms;
   };
+  const budgetLeft = () => WAIT_BUDGET_MS - waitedMs;
 
-  // One shot at each model in turn, recording why each one failed. A per-minute
-  // cap on one model says nothing about the next one's allowance — Groq counts
-  // quotas per model — so walking the chain answers in about two seconds where
-  // waiting out a retry-after took eighteen. Retirements and daily caps are
-  // recorded as they are found, so every later request in this process skips
-  // those models outright.
-  const walk = async (chain: string[]): Promise<GroqResult | null> => {
-    for (const model of chain) {
-      // Asked per model rather than once up front: every call in this walk spends
-      // from a bucket, so a model that was affordable when the walk started may
-      // not be by the time its turn arrives. Skipping here costs nothing, where
-      // sending the request would spend a round trip to be told the same thing.
-      const wait = waitFor(model, needed);
-      if (wait > 0) {
-        priced.push({ model, waitMs: wait });
-        continue;
-      }
-
-      const r = await tryModel(apiKey, body, model, needed);
-
-      if (r.ok) {
-        if (!validate || validate(stripThinking(r.content))) return r;
-        console.warn(
-          `[FinGuard] ${model} answered with output this route cannot parse (${r.content.length} chars); trying the next model.`
-        );
-        unusable ??= r;
-        continue;
-      }
-
-      last = r;
-
-      if (isGone(r.status, r.detail)) {
-        console.error(`[FinGuard] Groq no longer serves ${model} (${r.status}); trying the next model.`);
-        decommissioned.add(model);
-      } else if (r.status === 413) {
-        console.warn(`[FinGuard] ${model} refused a ${needed}-token request as too large; skipping it for requests this big.`);
-        refusedAbove.set(model, Math.min(refusedAbove.get(model) ?? Infinity, needed));
-      } else if (r.daily) {
-        outOfQuota.set(model, Date.now());
-      } else if (r.rateLimited) {
-        capped.push({ model, retryMs: r.retryMs });
-      }
-      // A 400 means this body is wrong for this model — response_format being
-      // the usual culprit — and a 5xx means Groq is struggling with it.
-      // Repeating fixes neither, but the next model may serve both: move on.
-    }
-    return null;
+  // What the governor knows, phrased as something the user can act on. Recomputed
+  // at the moment it is needed rather than reused, because the allowance refills
+  // continuously: a request that began thirty seconds short of the budget can
+  // reach this line two seconds short of it.
+  const quotaShort = (): Attempt => {
+    const ms = waitFor(needed);
+    return {
+      ok: false,
+      status: 429,
+      detail: `token budget short by ${needed} tokens; free in ${ms}ms`,
+      rateLimited: true,
+      daily: false,
+      retryMs: ms,
+      quotaHold: true,
+    };
   };
 
-  let answer = await walk(pool().filter(usable));
-  if (answer) return answer;
+  const send = async (): Promise<Attempt> => {
+    // Debited before the call, because two requests arriving together would
+    // otherwise both read the same healthy ledger and both spend it.
+    reserve(needed);
 
-  // Every id we know about is retired — including any this very walk just found
-  // out about. Ask Groq what it actually serves and try that now, in this same
-  // request: a retirement should cost one slow answer, not a dead feature until
-  // somebody notices and edits this file. Checked after the walk rather than
-  // before it, because before it the retirements have not been discovered yet.
-  if (pool().every((m) => decommissioned.has(m))) {
-    discovered = await discoverModels(apiKey);
-    if (discovered.length) {
-      console.warn(
-        `[FinGuard] every pinned Groq model is retired; falling back to the live catalogue: ${discovered.join(", ")}`
-      );
-      answer = await walk(discovered.filter(usable));
-      if (answer) return answer;
-    }
-  }
+    const r = await askGemini({ ...request, apiKey, validate });
 
-  // Nothing in the chain could afford the request when its turn came. If the
-  // shortfall clears in a few seconds, absorb it here and say nothing: an answer
-  // that arrives three seconds late is a far better outcome than a fallback
-  // report, and the handler has sixty seconds to spend. Anything longer is not
-  // ours to hide — it goes back to the caller as a number to show the user.
-  const cheapest = priced.sort((a, b) => a.waitMs - b.waitMs)[0];
-  if (cheapest && cheapest.waitMs <= ABSORB_MS) {
-    console.warn(
-      `[FinGuard] holding ${cheapest.waitMs}ms for ${cheapest.model} to refill rather than degrading (needed ${needed} tokens).`
-    );
-    await hold(cheapest.waitMs);
-    const r = await tryModel(apiKey, body, cheapest.model, needed);
-    if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
-    if (r.ok) unusable ??= r;
-    else {
-      last = r;
-      if (r.daily) outOfQuota.set(cheapest.model, Date.now());
-      else if (r.rateLimited) capped.push({ model: cheapest.model, retryMs: r.retryMs });
-    }
-  }
+    // Settle the estimate against what the turn really cost. Usage rides along on
+    // a rejected answer too — those tokens were genuinely spent — so the only
+    // case that gets its reservation back is a turn that never reached Google.
+    if (r.usage) syncFromUsage(r.usage, needed);
+    else if (!r.ok) release(needed);
 
-  // Nothing was free, so waiting is the only move left. Per-minute caps clear in
-  // seconds; take the one clearing soonest and give it one more try. Only one,
-  // because the handler has a 60-second ceiling and a fallback report the user
-  // can actually read beats a request that times out. Skipped outright if the
-  // pre-flight hold above already spent the budget — the shortfall is the same
-  // shortfall, and a second wait buys nothing the first one didn't.
-  const soonest = capped.sort((a, b) => a.retryMs - b.retryMs)[0];
-  if (soonest && soonest.retryMs <= WAIT_BUDGET_MS - waitedMs) {
-    await hold(soonest.retryMs);
-    const r = await tryModel(apiKey, body, soonest.model, needed);
-    if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
-    if (r.ok) unusable ??= r;
-    else {
-      last = r;
-      if (r.daily) outOfQuota.set(soonest.model, Date.now());
-    }
-  } else if (soonest) {
-    console.warn(
-      `[FinGuard] already waited ${waitedMs}ms; not spending another ${soonest.retryMs}ms on ${soonest.model} — answering from the local engine instead.`
-    );
-  }
+    if (r.ok) return { ok: true, text: r.text, model: r.model };
 
-  // A long quota wait is the most useful thing we know, so it outranks whatever
-  // the last failure happened to be — "free again in 38 seconds" is actionable
-  // where "503 no model available" is not. An unusable 200 still wins over both,
-  // because "the AI answered something unreadable" is a different problem and
-  // saying "wait" about it would send the user in the wrong direction.
-  if (!unusable && cheapest) {
-    // Recomputed rather than reusing the walk's figure: the ledger has since been
-    // synced against Groq's own header, and whatever we slept above has already
-    // refilled. The shortfall at the end of a request is routinely far smaller
-    // than it was at the start — a request that began thirty seconds short of the
-    // budget can reach this line two seconds short of it.
-    const stillShort = (): GroqResult => {
-      const ms = waitFor(cheapest.model, needed);
-      return {
-        ok: false,
-        status: 429,
-        detail: `token budget short by ${needed} tokens; ${cheapest.model} free in ${ms}ms`,
-        rateLimited: true,
-        daily: false,
-        retryMs: ms,
-        quotaHold: true,
-      };
+    if (r.rateLimited) noteExhausted();
+    return {
+      ok: false,
+      status: r.status,
+      detail: r.detail,
+      rateLimited: r.rateLimited,
+      daily: r.daily,
+      retryMs: r.retryMs,
     };
+  };
 
-    // Whatever is left of the silent-hold allowance, bounded by both the
-    // per-request wait budget and the same threshold the pre-flight hold uses, so
-    // this cannot turn into a second full-length wait under another name.
-    const freeIn = waitFor(cheapest.model, needed);
-    if (freeIn > Math.min(ABSORB_MS, WAIT_BUDGET_MS - waitedMs)) return stillShort();
-
-    // And not on a request that has already been running a long time. Walking the
-    // chain can cost ten seconds on a slow model before this line is even reached,
-    // and the handler's ceiling is sixty: a readable report at twenty beats a
-    // timeout at sixty, which is a blank screen however good the reasoning was.
-    if (Date.now() - startedAt + freeIn > REQUEST_SOFT_LIMIT_MS) {
-      console.warn(
-        `[FinGuard] ${Date.now() - startedAt}ms spent already; not holding a further ${freeIn}ms for ${cheapest.model}.`
-      );
-      return stillShort();
-    }
-
-    // Close enough to wait for. Degrading here would hand back a fallback report
-    // while the real answer was a couple of seconds away, on a request that has
-    // already spent longer than that getting to this line.
-    console.warn(
-      `[FinGuard] ${cheapest.model} is ${freeIn}ms from affordable after the chain; holding rather than degrading.`
-    );
-    await hold(freeIn);
-    const r = await tryModel(apiKey, body, cheapest.model, needed);
-    if (r.ok && (!validate || validate(stripThinking(r.content)))) return r;
-    if (r.ok) unusable ??= r;
-    else {
-      last = r;
-      // Still short even after waiting it out, so report the number rather than
-      // the status code — the seconds are the only actionable part.
-      if (r.rateLimited && !r.daily) return stillShort();
-    }
+  // Pre-flight. Skipping a request the allowance cannot cover costs nothing,
+  // where sending it spends a round trip to be told the same thing. A shortfall
+  // of a few seconds is absorbed silently instead — the handler has sixty seconds
+  // to spend, and an answer that arrives late is a far better outcome than a
+  // fallback report. Anything longer is not ours to hide: it goes back to the
+  // caller as a number to show the user.
+  const upfront = waitFor(needed);
+  if (upfront > 0) {
+    if (upfront > Math.min(ABSORB_MS, budgetLeft())) return quotaShort();
+    console.warn(`[FinGuard] holding ${upfront}ms for the token budget to refill rather than degrading.`);
+    await hold(upfront);
   }
 
-  return unusable ?? last;
+  let last = await send();
+  if (last.ok) return last;
+
+  // Exactly one more attempt, and only when there is a reason to think it would
+  // land differently. Repeating a request the endpoint called invalid changes
+  // nothing; resampling one it answered unreadably usually does.
+  const retryable = last.rateLimited || last.status === 422 || isTransient(last.status);
+  if (!retryable) return last;
+
+  // A quota refusal emptied the ledger, so the wait is now a real figure rather
+  // than a guess. A dropped socket needs only long enough not to be a hot loop.
+  const again = last.rateLimited ? waitFor(needed) : isTransient(last.status) ? RETRY_HOLD_MS : 0;
+
+  if (again > budgetLeft()) {
+    console.warn(
+      `[FinGuard] already waited ${waitedMs}ms; not spending another ${again}ms — answering from the local engine instead.`
+    );
+    return last.rateLimited ? quotaShort() : last;
+  }
+
+  // And not on a request that has already been running a long time. The handler's
+  // ceiling is sixty seconds, and a readable report at twenty beats a timeout at
+  // sixty, which is a blank screen however good the reasoning was.
+  if (Date.now() - startedAt + again > REQUEST_SOFT_LIMIT_MS) {
+    console.warn(`[FinGuard] ${Date.now() - startedAt}ms spent already; not opening a second attempt.`);
+    return last.rateLimited ? quotaShort() : last;
+  }
+
+  if (again > 0) await hold(again);
+  console.warn(`[FinGuard] retrying once after ${last.status}: ${last.detail.slice(0, 120)}`);
+
+  const second = await send();
+  if (second.ok) return second;
+
+  // Report the seconds rather than the status code when the seconds are the
+  // actionable part — "free again in 11 seconds" beats "429".
+  if (second.rateLimited && !second.daily) return quotaShort();
+  return second;
 }
 
 // How long the route will silently hold a request waiting for tokens to refill.
@@ -521,21 +303,25 @@ async function askGroq(
 // this, telling them the number beats making them stare at a spinner.
 const ABSORB_MS = 6_000;
 
-// The total a single request may spend asleep, across every attempt. Matches the
-// cap `tryModel` puts on one retry-after, so a request that never absorbed
-// anything still gets the full retry it always did.
+// The total a single request may spend asleep, across every attempt.
 const WAIT_BUDGET_MS = 8_000;
+
+// Long enough not to be a hot loop, short enough to be invisible. Only used
+// after a dropped socket or a 5xx, where the wait is not about quota at all —
+// there is nothing to refill, the connection just needs a fresh start.
+const RETRY_HOLD_MS = 600;
 
 // Past this much elapsed time, the route stops opening new attempts and answers
 // with what it has. Well inside the 60-second handler ceiling, with room for one
-// slow model to finish rather than being cut off mid-answer.
+// slow turn to finish rather than being cut off mid-answer.
 const REQUEST_SOFT_LIMIT_MS = 30_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// A model chosen by discovery may be a reasoning model that prints its
-// scratchpad into `content` rather than a separate field. That must never reach
-// the reader, and it must not break JSON parsing for the agent panel.
+// A model that prints its scratchpad into the answer rather than a separate field
+// must never reach the reader, and must not break JSON parsing for the agent
+// panel. The pinned model does not do this, but the transcript is a transcript —
+// stripping the tags costs nothing and removes a whole class of surprise.
 const stripThinking = (text: string) =>
   text
     .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
@@ -554,12 +340,12 @@ function wantsInvestigation(msg: string): boolean {
   return keywords.some((k) => m.includes(k));
 }
 
-// The chat API only accepts system/user/assistant. The client keeps richer
+// Gemini accepts two turn roles, "user" and "model". The client keeps richer
 // roles for its own bubbles ("report", "agent"), and one of those reaching the
-// model returned HTTP 400 for the whole turn, so the answer arrived as "AI
-// service unavailable". Anything that isn't a user turn is folded into
-// assistant, and entries without usable text are dropped rather than sent.
-function sanitizeHistory(history: unknown) {
+// API rejects the whole request, which the user sees as "AI service
+// unavailable". Anything that isn't a user turn is folded into "model", and
+// entries without usable text are dropped rather than sent.
+function sanitizeHistory(history: unknown): GeminiTurn[] {
   if (!Array.isArray(history)) return [];
   return history
     .slice(-6)
@@ -567,9 +353,9 @@ function sanitizeHistory(history: unknown) {
       const role = (m as { role?: unknown })?.role;
       const content = (m as { content?: unknown })?.content;
       if (typeof content !== "string" || !content.trim()) return null;
-      return { role: role === "user" ? "user" : "assistant", content };
+      return { role: role === "user" ? "user" : "model", text: content } as GeminiTurn;
     })
-    .filter((m): m is { role: string; content: string } => m !== null);
+    .filter((m): m is GeminiTurn => m !== null);
 }
 
 // Who to count this request against. The signed-in account is the right unit —
@@ -585,7 +371,8 @@ function callerId(req: Request, uid: unknown): string {
   return `ip:${forwarded || req.headers.get("x-real-ip") || "local"}`;
 }
 
-export async function POST(req: Request) {  try {
+export async function POST(req: Request) {
+  try {
     const { message, history, context, mode: forcedMode, uid } = await req.json();
 
     if (!message || typeof message !== "string") {
@@ -597,9 +384,15 @@ export async function POST(req: Request) {  try {
       (forcedMode !== "casual" && wantsInvestigation(message));
 
     // Analyse the data server-side first. This is what makes answers specific.
+    //
+    // Two sizes of the same evidence, because the two paths are not the same job.
+    // The report needs the full working document; a chat turn needs the facts and
+    // nothing telling it how to write. Sending the long one to a casual question
+    // cost 16 seconds a turn where the short one costs under two — see the note
+    // above `casualBrief`.
     const txs: Transaction[] = Array.isArray(context) ? context : [];
     const evidence = buildEvidence(txs);
-    const brief = evidenceBrief(evidence);
+    const brief = investigate ? evidenceBrief(evidence) : casualBrief(evidence);
 
     // Nothing to investigate — answer from the local engine rather than asking
     // the model to improvise. Sent to the AI it produced four near-identical
@@ -609,7 +402,7 @@ export async function POST(req: Request) {  try {
       return NextResponse.json(investigatePayload(evidence, localReport(evidence)));
     }
 
-    const apiKey = process.env.GROQ_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
 
     // No key, or no data — still give a real report rather than an error.
     if (!apiKey) {
@@ -629,15 +422,33 @@ export async function POST(req: Request) {  try {
       });
     }
 
-    const messages = [
-      { role: "system", content: investigate ? INVESTIGATE_PROMPT : CASUAL_PROMPT },
+    // Gemini keeps the system instruction out of the turn list and calls the
+    // assistant "model" rather than "assistant", so the conversation is assembled
+    // in that shape rather than OpenAI's.
+    const system = investigate ? INVESTIGATE_PROMPT : CASUAL_PROMPT;
+    const turns: GeminiTurn[] = [
       ...sanitizeHistory(history),
-      { role: "user", content: `${message}\n\n=== EVIDENCE BRIEF (computed from the user's real data) ===\n${brief}` },
+      { role: "user", text: `${message}\n\n=== EVIDENCE BRIEF (computed from the user's real data) ===\n${brief}` },
     ];
 
-    // Bullets, not essays — a report lands in well under this, and the free
-    // tier's daily token budget is spent far slower with a realistic cap.
-    const maxTokens = investigate ? 1400 : 500;
+    // Bullets, not essays — a report lands well inside this, and the per-minute
+    // token budget is spent far slower with a realistic cap. The investigate
+    // figure is measured rather than guessed: a full four-agent answer runs to
+    // about 2,500 characters of JSON, and 2,000 tokens leaves room for a wordier
+    // sampling without ever truncating mid-object, which would cost the whole turn.
+    //
+    // The casual figure is measured too, and it is larger than it looks like it
+    // needs to be. This model only emits AUDIO — it refuses a TEXT modality
+    // outright — so on any turn where it decides to speak, the cap is spent on
+    // audio tokens rather than on words. `responseTokensDetails` puts a spoken
+    // two-sentence answer at 438-502 AUDIO tokens, which means a 500 cap lands
+    // exactly on the edge: sometimes it suppresses the speech and the answer is
+    // fine, sometimes generation stops mid-sentence and the user reads "9
+    // transfers totalling ₹82.88 L, every one between" and nothing after it.
+    // 1,500 clears the measured cost with room for a long answer on top. It costs
+    // nothing in practice — the ledger is settled against real usage below, and a
+    // spoken turn really spends about 930 tokens.
+    const maxTokens = investigate ? 2_000 : 1_500;
 
     // Only investigations are cached. A report is a function of the data and the
     // question, so repeating either should give the same answer — whereas a
@@ -659,7 +470,7 @@ export async function POST(req: Request) {  try {
     }
 
     // Counted only now, after the cache has had its chance. A repeated question
-    // is answered from memory without touching Groq, so charging it against
+    // is answered from memory without touching Gemini, so charging it against
     // anyone's allowance would punish the one usage pattern that costs nothing —
     // and it is exactly the pattern a demo relies on.
     const who = callerId(req, uid);
@@ -704,23 +515,20 @@ export async function POST(req: Request) {  try {
       }
     }
 
-    const needed = estimateTokens(messages, maxTokens);
-    const outcome = await askGroq(
+    const needed = estimateTokens(turns, system, maxTokens);
+    const outcome = await askModel(
       apiKey,
-      {
-        messages,
-        temperature: investigate ? 0.4 : 0.7,
-        max_tokens: maxTokens,
-        ...(investigate ? { response_format: { type: "json_object" } } : {}),
-      },
+      { system, turns, temperature: investigate ? 0.4 : 0.7, maxOutputTokens: maxTokens },
       // Only the investigate path has a shape it must hit. A casual reply is
       // whatever the model said, so any non-empty answer is usable.
-      investigate ? (content) => parseAgents(content) !== null : (content) => content.trim().length > 0,
+      investigate
+        ? (text) => parseAgents(stripThinking(text)) !== null
+        : (text) => stripThinking(text).length > 0,
       needed
     );
 
     if (!outcome.ok) {
-      console.error("[FinGuard] Groq unavailable:", outcome.status, outcome.detail);
+      console.error("[FinGuard] Gemini unavailable:", outcome.status, outcome.detail);
       const { rateLimited, daily, quotaHold } = outcome;
       // The slot was charged for a call that never produced an answer, so hand it
       // back — a user whose request broke on a 400 or a 5xx should not pay the
@@ -769,14 +577,14 @@ export async function POST(req: Request) {  try {
       });
     }
 
-    const raw = stripThinking(outcome.content);
+    const raw = stripThinking(outcome.text);
 
-    // What the governor believes is left in the bucket that just answered. Rides
-    // along for the same reason the model id does: it costs nothing, it is not a
-    // secret, and it turns "why was that one slower" into one glance at the
-    // network tab. The QA harness reads it to check the ledger tracks Groq's own
-    // headers rather than drifting.
-    const budget = ledgerSnapshot(outcome.model);
+    // What the governor believes is left in the per-minute allowance. Rides along
+    // for the same reason the model id does: it costs nothing, it is not a secret,
+    // and it turns "why was that one slower" into one glance at the network tab.
+    // The QA harness reads it to check the ledger settles against the real token
+    // counts Gemini reports rather than drifting on its own estimate.
+    const budget = ledgerSnapshot();
 
     if (!investigate) {
       const clean = raw.replace(/```[a-z]*\n?/gi, "").replace(/```/g, "").trim();
@@ -812,7 +620,8 @@ export async function POST(req: Request) {  try {
       cache.set(key, { at: Date.now(), model: outcome.model, content: raw });
     }
 
-    return NextResponse.json({ ...investigatePayload(evidence, agents), model: outcome.model, budget });  } catch (err) {
+    return NextResponse.json({ ...investigatePayload(evidence, agents), model: outcome.model, budget });
+  } catch (err) {
     console.error("[FinGuard] Chat API error:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
@@ -876,6 +685,19 @@ function tidyBullets(text: string) {
     .trim();
 }
 
+/**
+ * The panels render confidence as a percentage of 1, and the prompt asks for
+ * 0-1. Gemini answers 95 about as often as 0.95 — reading either literally puts
+ * "9500%" on the screen — so a value above 1 is taken as a percentage. A model
+ * that means "certain" and writes 1 still lands on 1, and anything outside the
+ * scale is clamped rather than trusted.
+ */
+function confidenceOf(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0.85;
+  const scaled = raw > 1 ? raw / 100 : raw;
+  return Math.min(1, Math.max(0, scaled));
+}
+
 function normalize(list: unknown[]) {
   const cleaned = list
     .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
@@ -887,7 +709,7 @@ function normalize(list: unknown[]) {
       findings: Array.isArray(a.findings)
         ? a.findings.map((f) => stripInternalLabels(String(f).trim())).filter(Boolean).slice(0, 4)
         : [],
-      confidence: typeof a.confidence === "number" ? a.confidence : 0.85,
+      confidence: confidenceOf(a.confidence),
     }))
     .filter((a) => a.content.trim().length > 0);
   return cleaned.length ? cleaned : null;

@@ -1,14 +1,12 @@
 /**
- * Two guards that stand between a click and Groq's free tier.
+ * Two guards that stand between a click and Google AI Studio's free tier.
  *
- * The first is a token ledger. Groq meters this account at 8,000 tokens a
- * minute and charges prompt + max_tokens against it up front, so one full
- * four-agent investigation costs 6,000-8,000 of them — very nearly the whole
- * allowance in a single shot. The route used to find this out the expensive way:
- * send the request, read the 429, react. That wastes a round trip and, worse, it
- * cannot tell the person waiting how long they need to wait. Groq actually
- * publishes its own meter on every single response, so the fix is to read it and
- * do the arithmetic ahead of the call instead of behind it.
+ * The first is a token ledger. A four-agent investigation is a single expensive
+ * call — around 3,000 tokens of prompt plus whatever the answer runs to — and the
+ * free tier meters tokens per minute. The route used to find that out the
+ * expensive way: send the request, read the refusal, react. That wastes a round
+ * trip and, worse, it cannot tell the person waiting how long to wait. So the
+ * arithmetic happens ahead of the call instead of behind it.
  *
  * The second is a per-user limiter, because a quota shared by everyone is a
  * quota one person can empty. Three investigations a minute is far more than
@@ -18,31 +16,41 @@
  * Both keep their state in memory, deliberately, exactly like the report cache
  * in the chat route. See the note above `checkRate` for what that costs on
  * serverless and why it is still the right call here.
+ *
+ * One thing changed for the worse in the move off Groq, and it is worth being
+ * plain about. Groq printed its own meter on every response — a remaining-token
+ * count that was account-wide, so any serverless instance could correct itself
+ * from one reply. The Gemini Live socket sends no such figure. What it does send
+ * is `usageMetadata`, the real token count for the turn that just happened, so
+ * this ledger tracks actual spend accurately but only its own instance's spend.
+ * `noteExhausted` is what closes that gap: the first genuine refusal empties the
+ * bucket, and the governor behaves correctly from then on.
  */
 
-// Groq meters per *bucket*, not per model id, and that distinction decides
-// whether walking the model chain buys any headroom. Measured on this account:
-// gpt-oss-120b and gpt-oss-20b both reported 7,927 tokens remaining at the same
-// instant, which means they draw down one shared 8,000 allowance and falling
-// through from one to the other gains nothing. groq/compound is metered
-// separately and genuinely does.
-export type Bucket = "gpt-oss" | "compound" | "other";
+// One pinned model means one bucket. The name is kept in the snapshot because the
+// QA harness prints it, and because a second model would need a second bucket
+// rather than a shared one.
+export type Bucket = "gemini-live";
 
-export const bucketOf = (model: string): Bucket =>
-  model.startsWith("openai/gpt-oss")
-    ? "gpt-oss"
-    : model.startsWith("groq/compound")
-      ? "compound"
-      : "other";
-
-// Sensible starting points for a bucket nobody has called yet. The moment a real
-// response arrives these are replaced by Groq's own figures, so being slightly
-// wrong here costs at most one over-optimistic request.
-const ASSUMED_LIMIT: Record<Bucket, number> = {
-  "gpt-oss": 8_000,
-  compound: 12_000,
-  other: 6_000,
-};
+/**
+ * Tokens per minute this instance may spend.
+ *
+ * 65,000 is the free tier's per-minute allowance for this project's key. It is
+ * configuration rather than a figure read off the wire — unlike Groq, the Live
+ * API publishes no per-response meter, so nothing here can discover the number
+ * on its own. Two things keep that from mattering: `GEMINI_TPM` overrides it
+ * without a code change, and `noteExhausted` below empties the ledger the moment
+ * Google actually refuses a request, so an allowance that turns out to be lower
+ * costs one refusal to learn rather than a broken console.
+ *
+ * For scale: one four-agent investigation costs about 5,800 tokens, so eleven
+ * fit in a minute — comfortably more than the per-user limiter allows anyone to
+ * ask for, which is the point. The governor is the backstop, not the gate.
+ */
+const TPM_LIMIT = (() => {
+  const fromEnv = Number(process.env.GEMINI_TPM);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 65_000;
+})();
 
 type Ledger = {
   /** Tokens left at the moment `syncedAt` was taken. */
@@ -51,112 +59,88 @@ type Ledger = {
   syncedAt: number;
 };
 
-const ledgers = new Map<Bucket, Ledger>();
-
-const ledgerFor = (bucket: Bucket): Ledger => {
-  let l = ledgers.get(bucket);
-  if (!l) {
-    l = { remaining: ASSUMED_LIMIT[bucket], limit: ASSUMED_LIMIT[bucket], syncedAt: Date.now() };
-    ledgers.set(bucket, l);
-  }
-  return l;
-};
+const ledger: Ledger = { remaining: TPM_LIMIT, limit: TPM_LIMIT, syncedAt: Date.now() };
 
 /**
- * Groq's reset headers are human-readable rather than numeric: "547ms",
- * "1m26.4s", "5m45.6s" have all come back from this account. Parsed here only
- * for logging and for the rare case where it is the sole signal available — the
- * refill rate below is derived from the limit, not from this.
+ * The allowance refills continuously rather than at a window boundary, so a
+ * request only ever waits for its shortfall. Tokens come back at limit/60000 per
+ * millisecond — the same smooth model that was proven against Groq's own reset
+ * header (73 tokens spent reported 547ms of refill, and 73 tokens at 8,000/minute
+ * is 547.5ms), and the one a per-minute quota implies.
  */
-export function parseResetMs(value: string | null): number | null {
-  if (!value) return null;
-  const ms = /^([\d.]+)ms$/.exec(value.trim());
-  if (ms) return Number(ms[1]);
-  const parts = /^(?:([\d.]+)m)?(?:([\d.]+)s)?$/.exec(value.trim());
-  if (!parts || (!parts[1] && !parts[2])) return null;
-  return (Number(parts[1] ?? 0) * 60 + Number(parts[2] ?? 0)) * 1000;
+function projected(now: number): number {
+  const refilled = ledger.remaining + ((now - ledger.syncedAt) * ledger.limit) / 60_000;
+  return Math.min(ledger.limit, Math.max(0, refilled));
 }
 
 /**
- * The bucket refills continuously, and the arithmetic checks out against the
- * live API: after a call that spent 73 tokens the reset header read "547ms",
- * and 73 tokens at 8,000/minute is 547.5ms of refill. A fixed one-minute window
- * would have reported something close to 60s instead. So tokens come back at
- * limit/60000 per millisecond, smoothly, and a request only has to wait for the
- * shortfall rather than for a window boundary.
+ * Replace the up-front estimate with what the turn actually cost. The estimate
+ * is four characters to a token, which is fine for telling a 3,000-token request
+ * from a 600-token one and no better than that; `usageMetadata` is the truth, and
+ * applying it keeps a long run of requests from drifting.
  */
-function projected(l: Ledger, now: number): number {
-  const refilled = l.remaining + ((now - l.syncedAt) * l.limit) / 60_000;
-  return Math.min(l.limit, Math.max(0, refilled));
+export function syncFromUsage(usage: { totalTokens: number } | null, estimated: number): void {
+  if (!usage || !Number.isFinite(usage.totalTokens) || usage.totalTokens <= 0) return;
+  // The estimate was already debited by `reserve`. Settle the difference rather
+  // than debiting the whole real figure a second time.
+  const correction = usage.totalTokens - estimated;
+  ledger.remaining = Math.min(ledger.limit, Math.max(0, projected(Date.now()) - correction));
+  ledger.syncedAt = Date.now();
 }
 
 /**
- * Overwrite a bucket's ledger with Groq's own numbers. This is the call that
- * makes every other function here honest: without it the ledger is an estimate
- * built on a four-characters-per-token guess, and with it the estimate only has
- * to survive until the next response arrives.
- *
- * It also quietly fixes the multi-instance problem. Each serverless instance
- * keeps its own ledger and therefore starts out believing it owns the whole
- * allowance — but the remaining count Groq reports is account-wide, so the first
- * real response any instance sees corrects it to the truth. The drift costs one
- * over-optimistic call per cold instance, not a drained quota.
+ * Google has refused a request for quota. Whatever this instance believed about
+ * its remaining allowance was wrong, so empty the bucket and let the refill rate
+ * decide when it is safe to ask again. This is the one signal that corrects a
+ * TPM_LIMIT set too high, and it costs exactly one refused request to learn.
  */
-export function syncFromHeaders(model: string, headers: Headers): void {
-  const remaining = Number(headers.get("x-ratelimit-remaining-tokens"));
-  if (!Number.isFinite(remaining)) return;
-
-  const bucket = bucketOf(model);
-  const l = ledgerFor(bucket);
-  const limit = Number(headers.get("x-ratelimit-limit-tokens"));
-  if (Number.isFinite(limit) && limit > 0) l.limit = limit;
-  l.remaining = Math.max(0, remaining);
-  l.syncedAt = Date.now();
+export function noteExhausted(): void {
+  ledger.remaining = 0;
+  ledger.syncedAt = Date.now();
 }
 
 /**
- * Milliseconds until `model` can afford a `needed`-token request; 0 if it can
+ * Milliseconds until the model can afford a `needed`-token request; 0 if it can
  * right now. The caller decides whether that wait is worth absorbing or worth
  * reporting — a two-second hold is invisible, a forty-second one needs saying
  * out loud.
  */
-export function waitFor(model: string, needed: number): number {
-  const l = ledgerFor(bucketOf(model));
-  // A request larger than the bucket's entire allowance can never fit, no matter
-  // how long anyone waits. Report the full-refill time and let the caller treat
-  // it as the long wait it is, rather than returning Infinity and forcing every
-  // call site to special-case it.
-  if (needed > l.limit) return 60_000;
+export function waitFor(needed: number): number {
+  // A request larger than the whole per-minute allowance can never fit, no
+  // matter how long anyone waits. Report the full-refill time and let the caller
+  // treat it as the long wait it is, rather than returning Infinity and forcing
+  // every call site to special-case it.
+  if (needed > ledger.limit) return 60_000;
 
-  const short = needed - projected(l, Date.now());
+  const short = needed - projected(Date.now());
   if (short <= 0) return 0;
-  return Math.ceil((short * 60_000) / l.limit);
+  return Math.ceil((short * 60_000) / ledger.limit);
 }
 
 /**
  * Debit before the call rather than after it. Two requests arriving together in
  * one instance would otherwise both read the same healthy ledger, both decide
  * they have room, and both spend it — the exact double-spend the governor exists
- * to prevent. The real figure arrives with the response and replaces this.
+ * to prevent. `syncFromUsage` settles the difference once the real cost is known.
  */
-export function reserve(model: string, needed: number): void {
-  const l = ledgerFor(bucketOf(model));
-  l.remaining = Math.max(0, projected(l, Date.now()) - needed);
-  l.syncedAt = Date.now();
+export function reserve(needed: number): void {
+  ledger.remaining = Math.max(0, projected(Date.now()) - needed);
+  ledger.syncedAt = Date.now();
 }
 
-/** Hand back a reservation for a call that never reached Groq at all. */
-export function release(model: string, needed: number): void {
-  const l = ledgerFor(bucketOf(model));
-  l.remaining = Math.min(l.limit, projected(l, Date.now()) + needed);
-  l.syncedAt = Date.now();
+/** Hand back a reservation for a call that never reached Google at all. */
+export function release(needed: number): void {
+  ledger.remaining = Math.min(ledger.limit, projected(Date.now()) + needed);
+  ledger.syncedAt = Date.now();
 }
 
-/** Read-only view of a bucket, for logging and for the QA harness. */
-export function ledgerSnapshot(model: string) {
-  const bucket = bucketOf(model);
-  const l = ledgerFor(bucket);
-  return { bucket, limit: l.limit, projected: Math.round(projected(l, Date.now())) };
+/** Read-only view of the ledger, for logging and for the QA harness. */
+export function ledgerSnapshot() {
+  return {
+    bucket: "gemini-live" satisfies Bucket,
+    limit: ledger.limit,
+    projected: Math.round(projected(Date.now())),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +163,7 @@ const WINDOW_MS = 60_000;
 
 // Left in memory on purpose. Firestore-backed counters would survive across
 // serverless instances, but they would also add a read and a write to every
-// single turn — spending Firebase quota to protect Groq quota, and adding
+// single turn — spending Firebase quota to protect Gemini quota, and adding
 // latency to the request the user is waiting on. At this scale a warm instance
 // serves a whole session, so per-instance counters are accurate in practice and
 // free. The token ledger above is what genuinely protects the allowance; this is
@@ -208,7 +192,7 @@ export type RateVerdict =
  * the first second of the next. `retryAfterMs` is when the oldest hit in the
  * window falls out of it — the real moment a slot opens, not a round number.
  *
- * Only counts calls that will actually reach Groq. A cached report costs
+ * Only counts calls that will actually reach Gemini. A cached report costs
  * nothing, so the caller checks its cache first and never gets here on a hit.
  */
 export function checkRate(id: string, kind: "investigate" | "casual"): RateVerdict {
