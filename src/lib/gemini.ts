@@ -39,19 +39,76 @@ export const GEMINI_MODEL = "models/gemini-3.1-flash-live-preview";
  * Google's own tooling is not consistent about this: the AI Studio quickstart
  * says GEMINI_API_KEY, the Node client reads GOOGLE_API_KEY, and the Vercel AI
  * SDK reads GOOGLE_GENERATIVE_AI_API_KEY. Someone adding "the Google API key" to
- * a deployment dashboard picks one of those, and the console then reports itself
- * unconfigured while the key sits right there in the settings — a failure whose
- * only symptom is every answer quietly coming from the local engine.
+ * a deployment dashboard picks one of those — or just calls it `Google` — and the
+ * console then reports itself unconfigured while the key sits right there in the
+ * settings. The only symptom is every answer quietly coming from the local
+ * engine, which is a failure that looks like a working deployment.
  *
- * So all four are accepted, first one wins. GEMINI_API_KEY stays the documented
- * name in .env.example; the rest are there to stop a correct key being ignored
- * over its label.
+ * So: the four documented spellings first, and failing those, a scan for a key
+ * that is unmistakably a Google one. There are two formats in circulation — the
+ * long-standing `AIza` + 35 characters, and the newer AI Studio format, `AQ.`
+ * followed by about 50 — and a key issued today is the second kind. Both are
+ * specific enough to recognise.
+ *
+ * The one thing the scan must not do is pick up NEXT_PUBLIC_FIREBASE_API_KEY.
+ * That is an `AIza` key — every Firebase web config contains one — and it would
+ * authenticate as the wrong client against the wrong API. Anything named for
+ * Firebase, and anything NEXT_PUBLIC (a key the browser is allowed to see is by
+ * definition not the one guarding a paid model), is excluded before the shape
+ * test runs.
  */
+const KEY_NAMES = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "GOOGLE_AI_API_KEY",
+];
+
+/**
+ * The two shapes a Google API key comes in: `AQ.` + ~50 characters, which is
+ * what AI Studio issues now, and `AIza` + 35, which is what it used to and what
+ * Firebase still uses.
+ */
+const KEY_SHAPE = /^(AQ\.[\w.-]{20,}|AIza[\w-]{30,})$/;
+
+let warnedAboutName = false;
+
 export function geminiKey(): string | undefined {
-  const names = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_AI_API_KEY"];
-  for (const name of names) {
+  for (const name of KEY_NAMES) {
     const value = process.env[name]?.trim();
     if (value) return value;
+  }
+
+  const candidates = Object.keys(process.env)
+    .filter((n) => !/firebase|next_public/i.test(n))
+    .sort()
+    // Names that mention Google or Gemini are tried before anything else, so a
+    // deployment holding two Google keys still resolves the intended one.
+    .sort((a, b) => Number(/gemini|google|ai.?studio/i.test(b)) - Number(/gemini|google|ai.?studio/i.test(a)));
+
+  for (const name of candidates) {
+    const value = process.env[name]?.trim();
+    if (value && KEY_SHAPE.test(value)) {
+      if (!warnedAboutName) {
+        warnedAboutName = true;
+        // Names only — never the value. Visible in the platform's function logs,
+        // which is where someone debugging a deployment is already looking.
+        console.warn(
+          `[FinGuard] AI key found in ${name}, which is not a name this reads by default. ` +
+            `It works, but rename it to GEMINI_API_KEY so the next person does not have to find this line.`
+        );
+      }
+      return value;
+    }
+  }
+
+  if (!warnedAboutName) {
+    warnedAboutName = true;
+    const seen = Object.keys(process.env).filter((n) => /gemini|google|ai.?studio|api.?key/i.test(n));
+    console.warn(
+      `[FinGuard] no AI key found. Env names that looked related: ${seen.join(", ") || "(none)"}. ` +
+        `Set GEMINI_API_KEY.`
+    );
   }
   return undefined;
 }
