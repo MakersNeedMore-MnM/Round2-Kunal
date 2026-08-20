@@ -12,6 +12,11 @@ dist
 # Local agent workspace, not part of the app.
 .claude/
 
+# Throwaway QA credential the local harness hands to the browser through the
+# dev server. Written by .claude/qa/qa.mjs and deleted again by its cleanup
+# step; ignored here so an interrupted run can never commit one.
+public/__qa.json
+
 # Superseded copy of the whole app, kept locally only.
 new raisoni/
 

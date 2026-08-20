@@ -193,22 +193,6 @@ export function UploadView({ onDone }: { onDone: () => void }) {
     }
   }
 
-  function downloadTemplate() {
-    const template = [
-      "date,from,to,bank,amount,currency,type,note",
-      "2026-07-22,ACC001,ACC002,HDFC Bank,4800000,INR,wire_transfer,Structured layering",
-      "2026-07-22,ACC003,ACC004,ICICI Bank,42000,USD,transfer,Payroll",
-      "2026-07-22,ACC005,ACC006,Axis Bank,120000,INR,transfer,",
-    ].join("\n");
-    const blob = new Blob([template], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "finguard-template.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   const preview = rows.slice(0, 8);
   const highRisk = rows.filter((r) => classifyRisk(r.amount, r.note) === "high").length;
 
@@ -269,13 +253,23 @@ export function UploadView({ onDone }: { onDone: () => void }) {
                 ✕ Clear file
               </button>
             )}
-            <button
-              onClick={downloadTemplate}
-              className="rounded-lg border px-3 py-2 text-[12px] hover:bg-[var(--hover)] transition"
+            {/* The demo ledger rather than a bare header row. A four-line
+                template told you the column names and nothing else — you still
+                had to invent thirty plausible transactions before the dashboard
+                had anything to show. This is the same file the README walks
+                through: 30 rows containing four high-risk rings, so importing it
+                straight back populates every panel and every severity band.
+                Served from public/samples/, kept byte-identical to
+                samples/guided-demo.csv, which is the copy the docs cite. */}
+            <a
+              href="/samples/guided-demo.csv"
+              download="finguard-demo.csv"
+              title="30 real-looking transactions with four high-risk rings — import it as-is to see the console populated"
+              className="inline-flex items-center rounded-lg border px-3 py-2 text-[12px] hover:bg-[var(--hover)] transition"
               style={{ borderColor: "var(--border)", color: "var(--text)", background: "var(--chip)" }}
             >
-              ↓ Download template
-            </button>
+              ↓ Download demo CSV
+            </a>
           </div>
         </div>
 

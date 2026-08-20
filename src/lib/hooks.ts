@@ -121,7 +121,9 @@ export async function updateSARStatus(uid: string, id: string, status: string) {
 
 export async function createSAR(uid: string, report: Partial<SARReport>) {
   return await addDoc(userCollection(uid, "sar_reports"), {
-    ...report,
+    // Partial<SARReport> lets a caller pass an optional field through as an
+    // explicit undefined, which Firestore rejects — see withoutUndefined below.
+    ...withoutUndefined(report),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   });
@@ -152,6 +154,29 @@ export type ParsedRow = {
   type: string;
   note?: string;
 };
+
+/**
+ * Drops keys whose value is `undefined` before a document is written.
+ *
+ * Firestore does not treat `undefined` as "leave this field out" — it rejects
+ * the whole batch:
+ *
+ *     Function WriteBatch.set() called with invalid data.
+ *     Unsupported field value: undefined (found in field note in document …)
+ *
+ * TypeScript pushes you straight into that trap. `note?: string` is idiomatic
+ * for an optional column, and the natural way to produce one from a CSV cell
+ * that was blank is `|| undefined`. Spread that row into `set()` and the key is
+ * present with an undefined value, which is exactly what Firestore refuses. One
+ * empty cell in one row fails the entire import.
+ *
+ * Stripping here rather than at each call site means every optional field added
+ * to a row later is covered by default, instead of waiting to be discovered by
+ * a user whose upload died on a trailing comma.
+ */
+function withoutUndefined<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
 
 export type UploadRecord = {
   id: string;
@@ -218,7 +243,7 @@ export async function bulkInsertTransactions(uid: string, rows: ParsedRow[], fil
       const severity: Severity = classifyRisk(r.amount, r.note);
       const ref = doc(userCollection(uid, "transactions"));
       batch.set(ref, {
-        ...r,
+        ...withoutUndefined(r),
         severity,
         uploadId,
         createdAt: now + i,

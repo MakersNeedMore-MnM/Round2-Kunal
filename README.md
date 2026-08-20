@@ -185,7 +185,8 @@ npm run dev
 ```
 
 Open <http://localhost:3000>, create an account, and upload
-[`samples/guided-demo.csv`](samples/guided-demo.csv).
+[`samples/guided-demo.csv`](samples/guided-demo.csv) — or press
+**↓ Download demo CSV** on the Import CSV screen, which hands you the same file.
 
 ### CSV format
 
@@ -205,6 +206,10 @@ optional but make the analysis much sharper — `note` is what drives typology t
 | [`samples/guided-demo.csv`](samples/guided-demo.csv) | 30 | **Start here.** Exactly 4 high-risk rings (layering chain, structuring fan-out, mule funnel, offshore SWIFT exit), 2 medium and 4 clean groups — every severity band and every panel populated |
 | [`samples/typology-sweep.csv`](samples/typology-sweep.csv) | 36 | All six typologies including a shell-company funnel, spread over 7 banks |
 | [`samples/high-volume.csv`](samples/high-volume.csv) | 96 | A denser ledger for testing the graph, filters and pagination at size |
+
+`guided-demo.csv` also exists at [`public/samples/guided-demo.csv`](public/samples/guided-demo.csv),
+byte-identical, because that is the only directory Next.js serves statically and the
+in-app download button needs a URL. Edit both or neither.
 
 ---
 
