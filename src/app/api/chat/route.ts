@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { buildEvidence, casualBrief, evidenceBrief, localReport, type Evidence } from "@/lib/investigation";
 import { formatINR, type Severity, type Transaction } from "@/lib/domain";
-import { askGemini, type GeminiTurn } from "@/lib/gemini";
+import { askGemini, geminiKey, type GeminiTurn } from "@/lib/gemini";
 import {
   checkRate,
   ledgerSnapshot,
@@ -402,7 +402,7 @@ export async function POST(req: Request) {
       return NextResponse.json(investigatePayload(evidence, localReport(evidence)));
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = geminiKey();
 
     // No key, or no data — still give a real report rather than an error.
     if (!apiKey) {

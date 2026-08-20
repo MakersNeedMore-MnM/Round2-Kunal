@@ -33,6 +33,29 @@
 // src/app/api/chat/route.ts about what that costs.
 export const GEMINI_MODEL = "models/gemini-3.1-flash-live-preview";
 
+/**
+ * The API key, under whichever name the host happens to have used.
+ *
+ * Google's own tooling is not consistent about this: the AI Studio quickstart
+ * says GEMINI_API_KEY, the Node client reads GOOGLE_API_KEY, and the Vercel AI
+ * SDK reads GOOGLE_GENERATIVE_AI_API_KEY. Someone adding "the Google API key" to
+ * a deployment dashboard picks one of those, and the console then reports itself
+ * unconfigured while the key sits right there in the settings — a failure whose
+ * only symptom is every answer quietly coming from the local engine.
+ *
+ * So all four are accepted, first one wins. GEMINI_API_KEY stays the documented
+ * name in .env.example; the rest are there to stop a correct key being ignored
+ * over its label.
+ */
+export function geminiKey(): string | undefined {
+  const names = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_AI_API_KEY"];
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
 const HOST = "generativelanguage.googleapis.com";
 const SERVICE = "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
