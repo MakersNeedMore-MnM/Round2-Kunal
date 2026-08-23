@@ -21,18 +21,15 @@ investigation grounded in *your* numbers · and a filing-ready Suspicious Activi
 
 ## Why this exists
 
-Money laundering does not hide inside one bank. It hides in the **seams between banks**.
+Financial crime is rarely visible from a single transaction or a single institution. Modern money laundering schemes are designed to exploit the gaps between banks, payment providers, and financial systems, making each transfer appear legitimate when viewed in isolation.
 
-A ₹24 crore placement walks through six accounts at five different institutions in a
-single afternoon. HDFC sees one outgoing wire. ICICI sees one incoming wire. Axis sees a
-transfer that balances. Every bank's monitoring system looks at its own slice, finds
-nothing individually alarming, and stays quiet — while the complete shape, obvious the
-moment you draw it, is a textbook layering chain.
+FinGuard bridges that visibility gap.
 
-FinGuard is the console that draws it. Point it at a consolidated ledger and it recovers
-the structure no single institution can see: who controls the money, which hops were
-engineered to dodge a reporting threshold, and which accounts a regulator will ask about
-first.
+By analyzing a consolidated transaction ledger, FinGuard reconstructs the complete flow of funds across accounts, institutions, and time. Instead of evaluating transactions individually, it identifies hidden relationships, suspicious movement patterns, circular fund flows, rapid layering, and networks of connected accounts that traditional rule-based systems often miss.
+
+The platform transforms raw financial data into an explainable investigation by combining AI-driven risk scoring, transaction graph analysis, behavioral pattern detection, and automated case generation. Investigators can quickly understand **who moved the money, how it moved, why it appears suspicious, and which entities require immediate attention.**
+
+Whether used for fraud detection, AML research, compliance demonstrations, or cybersecurity projects, FinGuard provides a clear, visual, and evidence-backed view of complex financial activity—helping analysts detect risks that are difficult to uncover through isolated transaction monitoring alone.
 
 ## The 60-second tour
 
