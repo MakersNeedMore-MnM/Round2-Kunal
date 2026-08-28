@@ -44,14 +44,11 @@ function engineLabel(model: string | null): string {
 export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: string[]) => void } = {}) {
   const { transactions } = useTransactions();
   const { user } = useAuth();
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "m0",
-      role: "system",
-      content: "Session opened — ask a question, or run a full investigation.",
-      time: nowLabel(),
-    },
-  ]);
+  // The transcript is saved to localStorage so it survives a page reload or a
+  // full remount, not only a tab switch — keyed per signed-in user, so two
+  // accounts sharing one machine never inherit each other's conversation.
+  const storageKey = user?.uid ? `finguard-chat-${user.uid}` : "finguard-chat";
+  const [messages, setMessages] = useState<ChatMessage[]>(freshSession);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState<ChatAgent | "assistant" | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -65,6 +62,10 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
   // place to say which of the two produced what is on screen.
   const [engine, setEngine] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Flipped true once the saved transcript has been read back (or found absent).
+  // The save effect waits for it, so the empty default never overwrites a stored
+  // conversation during that first render.
+  const [hydrated, setHydrated] = useState(false);
 
   // A static "wait 24 seconds" goes stale the moment it is read, and the reader
   // has no way to tell whether it is still true. Ticking it down turns the same
@@ -75,6 +76,42 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
     const t = setTimeout(() => setCooldown((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [cooldown]);
+
+  // Read the saved transcript back. Runs on mount and again if the key changes
+  // (the uid resolves a beat after auth), and only replaces the default when a
+  // non-empty conversation was actually stored.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const saved = JSON.parse(raw) as {
+          messages?: ChatMessage[];
+          evidence?: EvidenceSummary | null;
+          engine?: string | null;
+        };
+        if (Array.isArray(saved.messages) && saved.messages.length) {
+          setMessages(saved.messages);
+          if (saved.evidence) setEvidence(saved.evidence);
+          if (typeof saved.engine === "string") setEngine(saved.engine);
+        }
+      }
+    } catch {
+      // A corrupt or unreadable cache should never take the console down with
+      // it — fall back to the fresh session already in state.
+    }
+    setHydrated(true);
+  }, [storageKey]);
+
+  // Write it back on every change, once hydration has run so we don't clobber a
+  // stored conversation with the empty default on first paint.
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ messages, evidence, engine }));
+    } catch {
+      // Storage full or disabled (private mode) — persistence is best-effort.
+    }
+  }, [hydrated, messages, evidence, engine, storageKey]);
 
   // Match against the real account list rather than a name pattern, so this
   // works whatever the user's CSV calls its accounts.
@@ -336,7 +373,11 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
                   Export transcript
                 </button>
                 <button
-                  onClick={() => setMessages([{ id: "m0", role: "system", content: "Session reset", time: nowLabel() }])}
+                  onClick={() => {
+                    setMessages([{ id: "m0", role: "system", content: "Session reset", time: nowLabel() }]);
+                    setEvidence(null);
+                    setEngine(null);
+                  }}
                   className="text-[11px] rounded-md border px-2 py-1 hover:bg-[var(--hover)]"
                   style={{ borderColor: "var(--border)", background: "var(--chip)", color: "var(--text)" }}
                 >
@@ -437,6 +478,19 @@ export function InvestigatorChat({ onOpenGraph }: { onOpenGraph?: (accounts: str
 
 function nowLabel() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// The opening state of a brand-new console — one system line, no history. Used
+// for the initial render and by "Reset session".
+function freshSession(): ChatMessage[] {
+  return [
+    {
+      id: "m0",
+      role: "system",
+      content: "Session opened — ask a question, or run a full investigation.",
+      time: nowLabel(),
+    },
+  ];
 }
 
 // What an earlier bubble contributes to the next turn. A report's own `content`

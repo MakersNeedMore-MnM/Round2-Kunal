@@ -188,7 +188,6 @@ html.light .bg-white\/5 { background-color: rgba(15, 23, 42, 0.06) !important; }
 html.light .hover\:bg-white\/5:hover { background-color: rgba(15, 23, 42, 0.06) !important; }
 html.light .hover\:bg-white\/\[0\.06\]:hover { background-color: rgba(15, 23, 42, 0.07) !important; }
 html.light .hover\:bg-white\/\[0\.08\]:hover { background-color: rgba(15, 23, 42, 0.08) !important; }
-html.light .bg-white\/\[0\.03\] { background-color: rgba(15, 23, 42, 0.04) !important; }
 
 /* Borders that used white/5 or white/10 */
 html.light .border-white\/5 { border-color: rgba(15, 23, 42, 0.08) !important; }
@@ -201,6 +200,42 @@ html.light .bg-black\/50 { background-color: rgba(15, 23, 42, 0.15) !important; 
 
 /* Cards / graph canvas fills */
 html.light .fill-\[\#0d1117\] { fill: #ffffff; }
+
+/* Pale accent lettering (Tailwind *-100/-200/-300 shades) assumes the dark
+   panels the app shipped with; on light surfaces those shades fall below
+   legible contrast. Remap each to a darker sibling of the same hue family.
+   Every rule in this block is scoped to html.light, so dark mode — already
+   signed off as perfect — cannot match any of them. */
+html.light .text-red-300 { color: #b91c1c; }
+html.light .text-red-200 { color: #b91c1c; }
+html.light .text-emerald-300 { color: #047857; }
+html.light .text-emerald-200 { color: #047857; }
+html.light .text-sky-300 { color: #0369a1; }
+html.light .text-sky-200 { color: #075985; }
+html.light .text-sky-100 { color: #075985; }
+html.light .text-amber-300 { color: #b45309; }
+html.light .text-amber-200 { color: #b45309; }
+
+/* SVG lettering is painted with presentation attributes, which ordinary class
+   rules cannot reach — select on the attribute value instead. */
+html.light svg text[fill="#ffffff"] { fill: #0f172a; } /* hover label */
+html.light svg text[fill="#7dd3fc"] { fill: #075985; } /* named/pinned label */
+html.light svg text[fill="#e2e8f0"] { fill: #334155; } /* hub label */
+html.light svg text[fill="#94a3b8"] { fill: #64748b; } /* default + cluster meta */
+html.light circle[fill="#0d1117"] { fill: #ffffff; }   /* node discs */
+
+/* The graph's floating HUD chips deliberately keep dark glass in BOTH themes —
+   they sit directly on the raw canvas where a white chip would wash out like a
+   missing map control. Because their background stays dark, their lettering
+   must NOT inherit the pale-accent remaps above (those assume a light panel
+   underneath). Pin the chips back to light text; !important is required to
+   outrank both the remaps and the right chip's inline var(--text). */
+html.light .graph-hud {
+  background: rgba(15, 23, 42, 0.78) !important;
+  color: #e2e8f0 !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+}
+html.light .graph-hud.text-red-300 { color: #fca5a5 !important; }
 
 /* ---------- Print: the SAR document only ---------- */
 /* window.print() on its own hands the printer the whole dashboard — sidebar,

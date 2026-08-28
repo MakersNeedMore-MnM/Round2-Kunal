@@ -12,6 +12,7 @@ import {
   type GraphNode,
 } from "@/lib/domain";
 import { useTransactions } from "@/lib/hooks";
+import { useTheme } from "@/components/ThemeProvider";
 import { SeverityBadge } from "../ui/SeverityBadge";
 import { NodeDetailDrawer } from "../NodeDetailDrawer";
 import { Page } from "../ui/Page";
@@ -38,6 +39,22 @@ export function GraphView({
   onOpenSAR?: () => void;
 } = {}) {
   const { transactions, loading } = useTransactions();
+  // Lane and typology hues were chosen to read on the dark canvas; as lettering
+  // on a white panel each one sinks below legible contrast. Light mode swaps the
+  // text colour for a darker sibling of the same family — fills, strokes, dots
+  // and glows keep the original hue, so the graph's palette is unchanged and
+  // only the words get darker. In dark mode this returns the colour untouched,
+  // so that theme renders exactly as before.
+  const { theme } = useTheme();
+  const laneText = useMemo(() => {
+    const darker: Record<string, string> = {
+      "#38bdf8": "#0369a1", "#a78bfa": "#6d28d9", "#f59e0b": "#b45309",
+      "#22c55e": "#15803d", "#ec4899": "#be185d", "#06b6d4": "#0e7490",
+      "#f97316": "#c2410c", "#8b5cf6": "#6d28d9", "#14b8a6": "#0f766e",
+      "#e11d48": "#be123c", "#ef4444": "#dc2626",
+    };
+    return (c: string) => (theme === "light" ? darker[c] ?? c : c);
+  }, [theme]);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -391,7 +408,7 @@ export function GraphView({
                       x={c.x + 29}
                       y={c.y + 22}
                       fontSize={11.5}
-                      fill={c.color}
+                      fill={laneText(c.color)}
                       letterSpacing="0.09em"
                       fontWeight={700}
                     >
@@ -453,7 +470,7 @@ export function GraphView({
                         y={(s.y + t.y) / 2 - 6}
                         textAnchor="middle"
                         fontSize={10}
-                        fill={color}
+                        fill={laneText(color)}
                         className="font-mono"
                         style={{ paintOrder: "stroke", stroke: "var(--bg)", strokeWidth: 3 }}
                       >
@@ -542,7 +559,7 @@ export function GraphView({
                         y={r + 25}
                         textAnchor="middle"
                         fontSize={8.5}
-                        fill={dynBank.color}
+                        fill={laneText(dynBank.color)}
                         className="font-mono"
                         style={{ paintOrder: "stroke", stroke: "var(--bg)", strokeWidth: 3 }}
                       >
@@ -564,14 +581,14 @@ export function GraphView({
               where it covers nothing. */}
           {highCount > 0 && (
             <div
-              className="pointer-events-none absolute left-3 bottom-3 hidden rounded-md border border-red-500/25 px-2.5 py-1.5 text-[11px] font-mono text-red-300 lg:block"
+              className="graph-hud pointer-events-none absolute left-3 bottom-3 hidden rounded-md border border-red-500/25 px-2.5 py-1.5 text-[11px] font-mono text-red-300 lg:block"
               style={{ background: "rgba(0,0,0,0.45)" }}
             >
               {highCount} HIGH RISK NODES DETECTED
             </div>
           )}
           <div
-            className="pointer-events-none absolute right-3 top-3 hidden rounded-md border px-2.5 py-1.5 text-[11px] font-mono lg:block"
+            className="graph-hud pointer-events-none absolute right-3 top-3 hidden rounded-md border px-2.5 py-1.5 text-[11px] font-mono lg:block"
             style={{ borderColor: "var(--border)", background: "rgba(0,0,0,0.45)", color: "var(--text)" }}
           >
             Hover to isolate a ring · click for the full dossier
@@ -620,10 +637,10 @@ export function GraphView({
       <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-3">
         <Panel title="Cluster inspector">
           <div className="grid shrink-0 grid-cols-4 gap-2 text-center">
-            <Stat label="Nodes" value={String(NODES.length)} color="#38bdf8" />
-            <Stat label="Edges" value={String(EDGES.length)} color="#a78bfa" />
-            <Stat label="Rings" value={String(webClusters.length)} color="#f59e0b" />
-            <Stat label="High" value={String(highCount)} color="#ef4444" />
+            <Stat label="Nodes" value={String(NODES.length)} color={laneText("#38bdf8")} />
+            <Stat label="Edges" value={String(EDGES.length)} color={laneText("#a78bfa")} />
+            <Stat label="Rings" value={String(webClusters.length)} color={laneText("#f59e0b")} />
+            <Stat label="High" value={String(highCount)} color={laneText("#ef4444")} />
           </div>
           <div className="h-px my-4 shrink-0" style={{ background: "var(--border)" }} />
           <div className="shrink-0 text-[11px] uppercase tracking-widest" style={{ color: "var(--muted)" }}>
@@ -667,7 +684,7 @@ export function GraphView({
                     {c.count} accounts
                   </span>
                 </span>
-                <span className="shrink-0 text-right text-[12px] font-mono" style={{ color: c.color }}>
+                <span className="shrink-0 text-right text-[12px] font-mono" style={{ color: laneText(c.color) }}>
                   {formatINR(c.total)}
                 </span>
               </div>
