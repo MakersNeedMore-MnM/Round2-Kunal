@@ -74,6 +74,7 @@ RULES THAT DECIDE WHETHER THIS IS ANY GOOD:
 - A number and the count beside it must come from the SAME source line, and this applies to every agent, in "content" and in "findings" alike. A ring's total goes only with that ring's account count; a finding's amount goes only with that finding's own count of payers or hops. They are different numbers about different things, and crossing them prints a figure that is flatly wrong. If a ring line says "7 accounts … ₹86.35 L" and a finding says "received ₹44.35 L from 5 different accounts", then "₹86.35 L from 5 accounts" and "collects from 7 accounts" are both errors. Write "₹44.35 L from 5 payers", or "the 7-account group moving ₹86.35 L" — never a half of each.
 - When a finding gives a date, name the date. "Six hops on 6 August" lands; "a series of transfers" does not. When it gives no date, say nothing about when — do not borrow a date from another finding.
 - The four agents must not say the same thing four times. Each answers its own question: what the network looks like / why it is wrong / which law it breaks / what to do on Monday morning.
+- ANSWER THE QUESTION THAT WAS ASKED. It arrives above the brief. The four agents and their subjects are fixed, but the emphasis is not: a question about one account leads with that account, a question asking for plain words drops the jargon further, a question about freezing puts the Investigation Assistant's steps first in every agent's mind. A generic recital of the whole portfolio, identical whatever was asked, is a failure.
 - NEVER print the internal labels from the brief. No "F1", "F2", "finding F3", "R1", "BANK-HOP", "THRESHOLD-HUG", "FUNNEL-IN". The reader has never seen the brief and these mean nothing to them. Describe the thing itself: "the nine payments that all stopped just short of ₹10 lakh".
 - Never assert a fact the brief does not contain. You do not know whether KYC papers are missing or forged, who owns an account, or what anyone intended — you know what the transfers did. Write "re-verify this account's KYC against its turnover", never "its KYC may be incomplete or falsified". Give the reason to check from the transfers themselves: "₹1.04 Cr passed through in a day".
 
@@ -328,16 +329,43 @@ const stripThinking = (text: string) =>
     .replace(/<\/?think(?:ing)?>/gi, "")
     .trim();
 
+// Which path a typed question takes. The bar is an explicit request for the
+// whole report — not a mention of its subject matter.
+//
+// This used to match any of twenty-six topic words, "suspicious", "risk",
+// "find", "detect" and "what's wrong" among them. Those catch ordinary
+// questions, and the four-agent panel answers with a fixed script over the
+// entire portfolio rather than the thing that was asked, so two different
+// questions came back as the same report: "Explain what's wrong with my data in
+// simple words" tripped it on "what's wrong" and "Why are these transfers
+// suspicious?" tripped it on "suspicious", and both produced identical output.
+// Three of the five suggested queries never matched at all, which is why only
+// those two collided.
+//
+// A question about the data belongs on the casual path, which reads the same
+// evidence and actually answers what was asked. The full report keeps its own
+// button, and that button passes `forcedMode`, so it never depends on this
+// function. "str" is gone for a second reason: as a bare substring it also
+// matched "administrator", "distribute" and "strange".
+const INVESTIGATION_REQUESTS = [
+  "investigate",
+  "investigation",
+  "audit",
+  "full report",
+  "full analysis",
+  "complete analysis",
+  "detailed report",
+  "deep dive",
+  "run the agents",
+  "agent panel",
+  "analyze everything",
+  "analyse everything",
+  "explain everything",
+];
+
 function wantsInvestigation(msg: string): boolean {
   const m = msg.toLowerCase();
-  const keywords = [
-    "investigate", "investigation", "analyze", "analyse", "audit", "review",
-    "suspicious", "risk", "anomal", "launder", "structur", "sar", "str",
-    "typology", "compliance", "agents", "full report", "deep dive",
-    "why is", "what patterns", "flag", "explain everything", "what's wrong",
-    "whats wrong", "find", "detect",
-  ];
-  return keywords.some((k) => m.includes(k));
+  return INVESTIGATION_REQUESTS.some((k) => m.includes(k));
 }
 
 // Gemini accepts two turn roles, "user" and "model". The client keeps richer
@@ -425,10 +453,21 @@ export async function POST(req: Request) {
     // Gemini keeps the system instruction out of the turn list and calls the
     // assistant "model" rather than "assistant", so the conversation is assembled
     // in that shape rather than OpenAI's.
+    //
+    // The question is labelled and repeated after the brief on the investigate
+    // path. Unlabelled and sitting on top of eight thousand characters of
+    // evidence it read as a preamble to the data rather than the thing to answer,
+    // and the report came back the same whatever had been asked.
     const system = investigate ? INVESTIGATE_PROMPT : CASUAL_PROMPT;
+    const briefBlock = `=== EVIDENCE BRIEF (computed from the user's real data) ===\n${brief}`;
     const turns: GeminiTurn[] = [
       ...sanitizeHistory(history),
-      { role: "user", text: `${message}\n\n=== EVIDENCE BRIEF (computed from the user's real data) ===\n${brief}` },
+      {
+        role: "user",
+        text: investigate
+          ? `THE QUESTION: ${message}\n\n${briefBlock}\n\n=== END OF BRIEF ===\nNow answer THE QUESTION above — "${message}" — as the four agents.`
+          : `${message}\n\n${briefBlock}`,
+      },
     ];
 
     // Bullets, not essays — a report lands well inside this, and the per-minute
