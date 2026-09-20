@@ -10,9 +10,11 @@ import {
 import {
   browserSessionPersistence,
   createUserWithEmailAndPassword,
+  GoogleAuthProvider,
   onAuthStateChanged,
   setPersistence,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut as fbSignOut,
   updateProfile,
   type User,
@@ -31,6 +33,7 @@ type AuthState = {
   loading: boolean;
   signUp: (email: string, password: string, fullName: string) => Promise<string | null>;
   signIn: (email: string, password: string) => Promise<string | null>;
+  signInWithGoogle: () => Promise<string | null>;
   signOut: () => Promise<void>;
 };
 
@@ -39,6 +42,7 @@ const AuthCtx = createContext<AuthState>({
   loading: true,
   signUp: async () => null,
   signIn: async () => null,
+  signInWithGoogle: async () => null,
   signOut: async () => {},
 });
 
@@ -150,13 +154,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function signInWithGoogle() {
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
+      const cred = await signInWithPopup(auth, provider);
+      await ensureUserDoc(cred.user);
+      return null;
+    } catch (err: unknown) {
+      return prettyError(err);
+    }
+  }
+
   async function signOut() {
     await fbSignOut(auth);
     setUser(null);
   }
 
   return (
-    <AuthCtx.Provider value={{ user, loading, signUp, signIn, signOut }}>
+    <AuthCtx.Provider value={{ user, loading, signUp, signIn, signInWithGoogle, signOut }}>
       {children}
     </AuthCtx.Provider>
   );
@@ -169,6 +185,11 @@ export function useAuth() {
 function prettyError(err: unknown): string {
   const raw = (err as { code?: string; message?: string } | null) ?? {};
   const code = raw.code ?? "";
+  if (code.includes("popup-closed-by-user")) return "Sign-in cancelled. Popup was closed.";
+  if (code.includes("cancelled-popup-request")) return "Sign-in request was cancelled.";
+  if (code.includes("unauthorized-domain"))
+    return "Domain not authorized. Please add this domain to Firebase Console → Authentication → Settings → Authorized domains.";
+  if (code.includes("popup-blocked")) return "Sign-in popup was blocked by the browser. Please allow popups.";
   if (code.includes("email-already-in-use")) return "This email is already registered. Try signing in.";
   if (code.includes("invalid-email")) return "Please enter a valid email address.";
   if (code.includes("weak-password")) return "Password must be at least 6 characters.";
@@ -176,6 +197,6 @@ function prettyError(err: unknown): string {
     return "Invalid email or password.";
   if (code.includes("network-request-failed")) return "Network error. Check your connection.";
   if (code.includes("configuration-not-found"))
-    return "Firebase Auth is not enabled. Go to Firebase Console → Authentication → Sign-in method → enable Email/Password.";
+    return "Firebase Auth is not enabled. Go to Firebase Console → Authentication → Sign-in method → enable Email/Password and Google.";
   return raw.message ?? "Something went wrong. Please try again.";
 }
